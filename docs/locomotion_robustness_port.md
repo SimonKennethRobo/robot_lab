@@ -121,3 +121,7 @@ reset 后首帧不计入臂加速度分母。失败比例以完成的 episode �
 
 小规模 smoke 的通过只证明接口、数值和更新流程可运行；没有证明收敛收益、最终 locomotion
 性能或实机效果。`expected_fault/` 是测试主动注入 NaN 的诊断产物，不是物理仿真故障。
+
+下一轮 yaw 响应与 base-z 稳定性实验从
+[`next_experiment_handoff_20260914.md`](next_experiment_handoff_20260914.md) 开始，先完成固定输入复现和
+数值保护，再按交接中的条件矩阵提交训练。
