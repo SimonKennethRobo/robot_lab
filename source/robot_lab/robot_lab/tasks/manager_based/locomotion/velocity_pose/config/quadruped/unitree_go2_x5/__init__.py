@@ -5,6 +5,16 @@ import gymnasium as gym
 
 from . import agents
 
+gym.register(
+    id="RobotLab-Isaac-VelocityPose-Mild-Unitree-Go2-X5-v0",
+    entry_point="robot_lab.tasks.manager_based.locomotion.velocity_pose:VelocityPoseEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.mild_env_cfg:UnitreeGo2X5VelocityPoseMildEnvCfg",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:UnitreeGo2X5VelocityPoseMildPPORunnerCfg",
+    },
+)
+
 ##
 # Register Gym environments for Unitree GO2 + ARX5
 ##

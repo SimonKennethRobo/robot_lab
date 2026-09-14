@@ -27,12 +27,12 @@ class UniformVelocityPoseCommand(velocity_mdp.UniformThresholdVelocityCommand):
     - Robot Base Frame C (Body): Fully follows robot base orientation (roll, pitch, yaw)
     
     Command Structure (7D):
-    - Motion commands (in World Frame A):
-      * lin_vel_x, lin_vel_y: Linear velocity in world XY plane
+    - Motion commands (yaw-aligned XY, world-Z angular velocity):
+      * lin_vel_x, lin_vel_y: Linear velocity in the yaw-aligned XY plane
       * ang_vel_z: Angular velocity changing robot's motion direction (rotates Frame B around world Z)
     
     - Pose commands (Base Frame C relative to Point Frame B):
-      * height: Target height for robot base CoM
+      * height: Target height for robot root link
       * roll, pitch, yaw: Rotation of Base Frame C relative to Point Frame B
       * When [roll=0, pitch=0, yaw=0], Frame C and Frame B are aligned
     
@@ -52,7 +52,7 @@ class UniformVelocityPoseCommand(velocity_mdp.UniformThresholdVelocityCommand):
         super().__init__(cfg, env)
         
         # Create buffers for height and pose commands
-        # Height command: (num_envs, 1) - target height for base CoM
+        # Height command: (num_envs, 1) - target height for root link
         self.height_command = torch.zeros(self.num_envs, 1, device=self.device)
         # Pose command: (num_envs, 3) - [roll, pitch, yaw] relative to Point Frame B
         self.pose_command = torch.zeros(self.num_envs, 3, device=self.device)
@@ -66,7 +66,7 @@ class UniformVelocityPoseCommand(velocity_mdp.UniformThresholdVelocityCommand):
         
         Command structure: [lin_vel_x, lin_vel_y, ang_vel_z, height, roll, pitch, yaw]
         
-        - lin_vel_x, lin_vel_y: World Frame A linear velocities (m/s)
+        - lin_vel_x, lin_vel_y: Yaw-aligned XY linear velocities (m/s)
         - ang_vel_z: World Frame A angular velocity (rad/s) - changes motion direction
         - height: Target base height (m)
         - roll, pitch, yaw: Base Frame C orientation relative to Point Frame B (rad)
@@ -74,79 +74,24 @@ class UniformVelocityPoseCommand(velocity_mdp.UniformThresholdVelocityCommand):
         return torch.cat([self.vel_command_b, self.height_command, self.pose_command], dim=1)
 
     def _resample_command(self, env_ids: Sequence[int]):
-        """Resample velocity and pose commands.
-        
-        For curriculum learning, height and pose commands are set to default values initially.
-        """
-        # First resample velocity commands using parent class
+        """Sample absolute height and pose ranges, including nonzero constants."""
         super()._resample_command(env_ids)
-        
-        # Sample height command (initially using default height)
-        # For curriculum learning, we keep it at default
         height_range = self.cfg.ranges.height
-        if height_range[0] == height_range[1]:
-            # Use default height when range is zero
-            self.height_command[env_ids] = self.default_height
-        else:
-            # Sample from range
-            self.height_command[env_ids] = torch.rand(
-                len(env_ids), 1, device=self.device
-            ) * (height_range[1] - height_range[0]) + height_range[0]
-        
-    def _resample_command(self, env_ids: Sequence[int]):
-        """Resample velocity and pose commands.
-        
-        For curriculum learning, height and pose commands are set to default values initially.
-        """
-        # First resample velocity commands using parent class
-        super()._resample_command(env_ids)
-        
-        # Sample height command (initially using default height)
-        # For curriculum learning, we keep it at default
-        height_range = self.cfg.ranges.height
-        if height_range[0] == height_range[1]:
-            # Use default height when range is zero
-            self.height_command[env_ids] = self.default_height
-        else:
-            # Sample from range
-            self.height_command[env_ids] = torch.rand(
-                len(env_ids), 1, device=self.device
-            ) * (height_range[1] - height_range[0]) + height_range[0]
-        
-        # Sample roll, pitch, yaw commands (initially set to zero for curriculum learning)
-        # These are relative to Robot Point Frame B (Yaw-Aligned Frame)
-        roll_range = self.cfg.ranges.roll
-        pitch_range = self.cfg.ranges.pitch
-        yaw_range = self.cfg.ranges.yaw
-        
-        if roll_range[0] == roll_range[1]:
-            self.pose_command[env_ids, 0] = 0.0  # Default roll = 0
-        else:
-            self.pose_command[env_ids, 0] = torch.rand(
-                len(env_ids), device=self.device
-            ) * (roll_range[1] - roll_range[0]) + roll_range[0]
-        
-        if pitch_range[0] == pitch_range[1]:
-            self.pose_command[env_ids, 1] = 0.0  # Default pitch = 0
-        else:
-            self.pose_command[env_ids, 1] = torch.rand(
-                len(env_ids), device=self.device
-            ) * (pitch_range[1] - pitch_range[0]) + pitch_range[0]
-        
-        if yaw_range[0] == yaw_range[1]:
-            self.pose_command[env_ids, 2] = 0.0  # Default yaw = 0
-        else:
-            self.pose_command[env_ids, 2] = torch.rand(
-                len(env_ids), device=self.device
-            ) * (yaw_range[1] - yaw_range[0]) + yaw_range[0]
+        # Preserve the legacy (0, 0) sentinel for plain GO2 configurations.
+        if height_range == (0.0, 0.0):
+            height_range = (self.default_height, self.default_height)
+        self.height_command[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(*height_range)
+        for index, name in enumerate(("roll", "pitch", "yaw")):
+            bounds = getattr(self.cfg.ranges, name)
+            self.pose_command[env_ids, index] = torch.empty(len(env_ids), device=self.device).uniform_(*bounds)
 
     def _update_metrics(self):
-        """Update metrics for the command generator."""
-        # Call parent's update metrics for velocity tracking
-        super()._update_metrics()
-        
-        # Add height and pose tracking metrics (can be extended later)
-        pass
+        """Use the same yaw-aligned XY and world-Z frames as tracking rewards."""
+        from isaaclab.utils.math import quat_apply_inverse, yaw_quat
+        steps = self.cfg.resampling_time_range[1] / self._env.step_dt
+        velocity = quat_apply_inverse(yaw_quat(self.robot.data.root_quat_w), self.robot.data.root_lin_vel_w)
+        self.metrics["error_vel_xy"] += (self.vel_command_b[:, :2] - velocity[:, :2]).norm(dim=-1) / steps
+        self.metrics["error_vel_yaw"] += (self.vel_command_b[:, 2] - self.robot.data.root_ang_vel_w[:, 2]).abs() / steps
 
 
 @configclass
@@ -156,7 +101,7 @@ class UniformVelocityPoseCommandCfg(velocity_mdp.UniformThresholdVelocityCommand
     This generates 7D commands: [lin_vel_x, lin_vel_y, ang_vel_z, height, roll, pitch, yaw]
     
     Coordinate System:
-    - lin_vel_x, lin_vel_y, ang_vel_z: World Frame A (global reference)
+    - lin_vel_x, lin_vel_y: yaw-aligned frame; ang_vel_z: world vertical axis
     - height, roll, pitch, yaw: Base Frame C relative to Point Frame B (yaw-aligned)
     """
 
@@ -164,7 +109,7 @@ class UniformVelocityPoseCommandCfg(velocity_mdp.UniformThresholdVelocityCommand
     
     # Default height for the robot base (will be overridden per robot)
     default_height: float = 0.35
-    """Default height for robot base CoM in meters."""
+    """Default height for robot root link in meters."""
     
     @configclass
     class Ranges(velocity_mdp.UniformThresholdVelocityCommandCfg.Ranges):

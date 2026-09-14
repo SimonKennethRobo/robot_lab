@@ -55,16 +55,12 @@ def track_height_exp(
     if sensor_cfg is not None:
         sensor: RayCaster = env.scene[sensor_cfg.name]
         ray_hits = sensor.data.ray_hits_w[..., 2]
-        # Check sensor data validity
-        if not (torch.isnan(ray_hits).any() or torch.isinf(ray_hits).any()):
-            # Current height = base z coordinate - average terrain height
-            current_height = asset.data.root_pos_w[:, 2] - torch.mean(ray_hits, dim=1)
-        else:
-            # Fall back to world coordinates when sensor is invalid
-            current_height = asset.data.root_pos_w[:, 2]
+        from ..shared.robustness_math import ground_height
+        ground, _ = ground_height(ray_hits, env.scene.env_origins[:, 2])
+        current_height = asset.data.root_pos_w[:, 2] - ground
     else:
-        current_height = asset.data.root_pos_w[:, 2]
-    
+        current_height = asset.data.root_pos_w[:, 2] - env.scene.env_origins[:, 2]
+
     # Calculate absolute height error (more sensitive to small errors)
     height_error_abs = torch.abs(target_height - current_height)
     

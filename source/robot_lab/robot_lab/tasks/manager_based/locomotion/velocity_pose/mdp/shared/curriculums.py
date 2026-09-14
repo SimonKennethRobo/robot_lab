@@ -373,7 +373,7 @@ def command_curriculum_height_pose(
         else:
             # Fallback to calculation
             total_steps = env.common_step_counter
-            steps_per_iteration = env.num_envs * 24
+            steps_per_iteration = 24
             total_iterations = total_steps // steps_per_iteration
             iteration_source = "rsl_rl_fallback"
     elif hasattr(env, 'unwrapped') and hasattr(env.unwrapped, '_current_iteration'):
@@ -383,13 +383,13 @@ def command_curriculum_height_pose(
     elif hasattr(env.unwrapped, 'episode_length_buf'):
         # Calculate from episode counter (for RSL-RL)
         total_steps = env.common_step_counter
-        steps_per_iteration = env.num_envs * 24  # RSL-RL default: 24 steps per env per iteration
+        steps_per_iteration = 24  # RSL-RL default: 24 steps per env per iteration
         total_iterations = total_steps // steps_per_iteration
         iteration_source = "rsl_rl_calculation"
     else:
         # Last resort fallback
         total_steps = env.common_step_counter  
-        steps_per_iteration = env.num_envs * 24  # Assume RSL-RL default
+        steps_per_iteration = 24  # Assume RSL-RL default
         total_iterations = total_steps // steps_per_iteration
         iteration_source = "fallback_calculation"
         
@@ -694,11 +694,11 @@ def arm_randomization_curriculum(
             total_iterations = runner.current_learning_iteration
         else:
             total_steps = env.common_step_counter
-            steps_per_iteration = env.num_envs * 24
+            steps_per_iteration = 24
             total_iterations = total_steps // steps_per_iteration
     else:
         total_steps = env.common_step_counter
-        steps_per_iteration = env.num_envs * 24
+        steps_per_iteration = 24
         total_iterations = total_steps // steps_per_iteration
 
     # Check if we should enable arm randomization
@@ -745,7 +745,3 @@ def command_levels_orientation(
 ) -> torch.Tensor:
     """Legacy wrapper for orientation curriculum. Use command_curriculum_height_pose instead."""
     return command_curriculum_height_pose(env, env_ids, command_name)
-
-
-# Import math for degree conversion in print statements
-import math

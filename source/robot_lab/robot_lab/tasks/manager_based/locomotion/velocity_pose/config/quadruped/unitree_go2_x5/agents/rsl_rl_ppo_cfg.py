@@ -20,12 +20,12 @@ class UnitreeGo2X5VelocityPoseRoughPPORunnerCfg(UnitreeGo2VelocityPoseRoughPPORu
         # Set correct experiment name for GO2+X5
         self.experiment_name = "unitree_go2_x5_velocity_pose_rough"
         
-        # Adjust network size for 76D observations
-        # Policy network: 76D input → 512 → 256 → 128 → 12D output (dog joints only)
+        # 64D proprioception -> 512 -> 256 -> 128 -> 12 leg actions.
         self.policy.class_name = "ActorCritic"
         
-        # Stage 1: 50k iterations (approximately 7-8 days on 4090)
-        self.max_iterations = 50000
+        # Initial budget: 8k curriculum + 12k at full intensity. Extend from
+        # checkpoints only if tracking/failure metrics justify more training.
+        self.max_iterations = 20000
         
         # Learning rate schedule
         self.policy.init_noise_std = 1.0
@@ -53,3 +53,10 @@ class UnitreeGo2X5VelocityPoseFlatPPORunnerCfg(UnitreeGo2X5VelocityPoseRoughPPOR
         
         # Flat terrain can be slightly easier
         self.algorithm.learning_rate = 5e-4
+
+
+@configclass
+class UnitreeGo2X5VelocityPoseMildPPORunnerCfg(UnitreeGo2X5VelocityPoseRoughPPORunnerCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.experiment_name = "unitree_go2_x5_velocity_pose_mild"

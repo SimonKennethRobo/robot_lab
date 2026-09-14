@@ -17,6 +17,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+from robustness_cli import normalize_robustness_float_overrides  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -39,18 +40,37 @@ parser.add_argument(
 parser.add_argument("--real-time", action="store_true", default=False, help="Run in real-time, if possible.")
 parser.add_argument("--keyboard", action="store_true", default=False, help="Whether to use keyboard.")
 parser.add_argument(
+    "--robustness_iteration",
+    type=int,
+    default=None,
+    help="Fixed robustness evaluation iteration; default restores checkpoint progress.",
+)
+parser.add_argument("--domain_rand", choices=["none", "benchmark", "sim2real"], default="benchmark")
+parser.add_argument("--arm_mode", choices=["random", "structured", "hold"], default=None)
+parser.add_argument("--debug_vis", action="store_true", help="Show pose markers for at most 8 environments.")
+parser.add_argument(
+    "--max_steps", type=int, default=0, help="Stop after this many playback steps; 0 runs continuously."
+)
+parser.add_argument(
     "--curriculum_stage",
     type=int,
     default=4,
     choices=[1, 2, 3, 4, 5],
-    help="Curriculum stage to use for inference (1=base, 2=small range, 3=medium range, 4=max range, 5=extreme). Default: 4",
+    help=(
+        "Curriculum stage to use for inference (1=base, 2=small range, 3=medium range, 4=max range, 5=extreme)."
+        " Default: 4"
+    ),
 )
 parser.add_argument(
     "--arm_actions_idx",
     type=int,
     default=None,
     choices=[0, 1, 2, 3, 4, 5, 6, 7, 8],
-    help="Force specific arm motion mode for all environments (0=circular, 1=figure_eight, 2=sinusoidal, 3=random_walk, 4=reach_points, 5=fishing, 6=grasping, 7=swinging, 8=probing). If not specified, uses random cyclic assignment.",
+    help=(
+        "Force specific arm motion mode for all environments (0=circular, 1=figure_eight, 2=sinusoidal, 3=random_walk,"
+        " 4=reach_points, 5=fishing, 6=grasping, 7=swinging, 8=probing). If not specified, uses random cyclic"
+        " assignment."
+    ),
 )
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -58,6 +78,10 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 # parse the arguments
 args_cli, hydra_args = parser.parse_known_args()
+normalized_hydra_args = normalize_robustness_float_overrides(hydra_args)
+if normalized_hydra_args != hydra_args:
+    print("[INFO] Normalized integer robustness overrides to float literals for IsaacLab.")
+hydra_args = normalized_hydra_args
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -120,7 +144,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # spawn the robot randomly in the grid (instead of their terrain levels)
     env_cfg.scene.terrain.max_init_terrain_level = None
     # reduce the number of terrains to save memory
-    if env_cfg.scene.terrain.terrain_generator is not None:
+    if env_cfg.scene.terrain.terrain_generator is not None and getattr(env_cfg, "robustness", None) is None:
         env_cfg.scene.terrain.terrain_generator.num_rows = 5
         env_cfg.scene.terrain.terrain_generator.num_cols = 5
         env_cfg.scene.terrain.terrain_generator.curriculum = False
@@ -129,23 +153,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.observations.policy.enable_corruption = False
     # remove random pushing
     env_cfg.events.randomize_apply_external_force_torque = None
-    env_cfg.events.push_robot = None
+    env_cfg.events.randomize_push_robot = (
+        None if getattr(env_cfg, "robustness", None) is None else env_cfg.events.randomize_push_robot
+    )
     env_cfg.curriculum.command_levels_lin_vel = None
     env_cfg.curriculum.command_levels_ang_vel = None
 
     if args_cli.keyboard:
         env_cfg.scene.num_envs = 1
         env_cfg.terminations.time_out = None
-        env_cfg.commands.base_velocity.debug_vis = False
+        keyboard_command = (
+            env_cfg.commands.base_velocity_pose
+            if hasattr(env_cfg.commands, "base_velocity_pose")
+            else env_cfg.commands.base_velocity
+        )
+        keyboard_command.debug_vis = False
         config = Se2KeyboardCfg(
-            v_x_sensitivity=env_cfg.commands.base_velocity.ranges.lin_vel_x[1],
-            v_y_sensitivity=env_cfg.commands.base_velocity.ranges.lin_vel_y[1],
-            omega_z_sensitivity=env_cfg.commands.base_velocity.ranges.ang_vel_z[1],
+            v_x_sensitivity=keyboard_command.ranges.lin_vel_x[1],
+            v_y_sensitivity=keyboard_command.ranges.lin_vel_y[1],
+            omega_z_sensitivity=keyboard_command.ranges.ang_vel_z[1],
         )
         controller = Se2Keyboard(config)
-        env_cfg.observations.policy.velocity_commands = ObsTerm(
-            func=lambda env: torch.tensor(controller.advance(), dtype=torch.float32).unsqueeze(0).to(env.device),
-        )
+
+        def keyboard_commands(env):
+            velocity = torch.tensor(controller.advance(), dtype=torch.float32, device=env.device).unsqueeze(0)
+            if hasattr(env.cfg.commands, "base_velocity_pose"):
+                term = env.command_manager.get_term("base_velocity_pose")
+                term.vel_command_b[:] = velocity
+                return term.command
+            return velocity
+
+        env_cfg.observations.policy.velocity_commands = ObsTerm(func=keyboard_commands)
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -165,22 +203,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
-    
+
     # CRITICAL: Set inference stage BEFORE environment creation
     # This allows DogArmCompositeAction to initialize with correct stage
     env_cfg.inference_mode = True
     env_cfg.inference_stage = args_cli.curriculum_stage
-    
-    # Set fixed arm action mode if specified (must be done BEFORE env creation)
-    if args_cli.arm_actions_idx is not None:
+
+    if getattr(env_cfg, "robustness", None) is not None:
+        env_cfg.robustness.domain_rand = args_cli.domain_rand
+        env_cfg.robustness.steps_per_iteration = agent_cfg.num_steps_per_env
+        if args_cli.robustness_iteration is not None:
+            env_cfg.robustness.iteration_override = args_cli.robustness_iteration
+        if args_cli.arm_actions_idx is not None:
+            raise ValueError(
+                "The bounded arm generator uses --arm_mode random|structured|hold; the legacy 9 modes are no longer"
+                " used."
+            )
+        if args_cli.arm_mode is not None:
+            env_cfg.robustness.arm_mode = ("random", "structured", "hold").index(args_cli.arm_mode)
+        env_cfg.commands.base_velocity_pose.debug_vis = args_cli.debug_vis
+        env_cfg.log_dir = os.path.join(log_dir, "evaluation")
+    elif args_cli.arm_actions_idx is not None:
         env_cfg.fixed_arm_mode_idx = args_cli.arm_actions_idx
-        mode_names = ["circular", "figure_eight", "sinusoidal", "random_walk", "reach_points", 
-                      "fishing", "grasping", "swinging", "probing"]
-        print(f"[INFO] Fixed Arm Motion Mode: {mode_names[args_cli.arm_actions_idx]} (index {args_cli.arm_actions_idx})")
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-    
+
     # Also set on unwrapped env for curriculum to read
     env.unwrapped._is_inference_mode = True  # type: ignore[attr-defined]
     env.unwrapped._inference_curriculum_stage = args_cli.curriculum_stage  # type: ignore[attr-defined]
@@ -203,25 +251,33 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
-    
+
     # Mark as inference mode for curriculum (no runner injection)
     # Set the curriculum stage for inference based on command line argument
     env.unwrapped._is_inference_mode = True  # type: ignore[attr-defined]
     env.unwrapped._inference_curriculum_stage = args_cli.curriculum_stage  # type: ignore[attr-defined]
-    
+
     stage_descriptions = {
         1: "Stage 1 (Base): Height/pose fixed at default, velocity control only",
         2: "Stage 2 (Small): ±3cm height, ±8° roll",
         3: "Stage 3 (Medium): ±10cm height, ±20° roll, ±12° pitch",
         4: "Stage 4 (Maximum): ±15cm height, ±30° roll, ±15° pitch",
-        5: "Stage 5 (Extreme): Same as Stage 4 but with 1.5x arm motion amplitude"
+        5: "Stage 5 (Extreme): Same as Stage 4 but with 1.5x arm motion amplitude",
     }
-    print(f"[INFO] Curriculum Stage for Inference: {stage_descriptions[args_cli.curriculum_stage]}")
+    if getattr(env_cfg, "robustness", None) is None:
+        print(f"[INFO] Curriculum Stage for Inference: {stage_descriptions[args_cli.curriculum_stage]}")
 
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     # load previously trained model
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+        runner_type = OnPolicyRunner
+        if getattr(env_cfg, "robustness", None) is not None:
+            from robot_lab.tasks.manager_based.locomotion.velocity_pose.robustness_runner import (
+                LocomotionOnPolicyRunner,
+            )
+
+            runner_type = LocomotionOnPolicyRunner
+        runner = runner_type(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:
@@ -255,18 +311,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     dt = env.unwrapped.step_dt
 
-    # Initialize visualizer for VelocityPose commands if applicable
-    visualizer = None
-    if "VelocityPose" in args_cli.task:
-        try:
-            from robot_lab.tasks.manager_based.locomotion.velocity_pose.mdp.visualizers import (
-                VelocityPoseCommandVisualizer,
-            )
-            visualizer = VelocityPoseCommandVisualizer(env.unwrapped, env.unwrapped.num_envs)
-            print("[INFO] VelocityPose command visualizer enabled")
-        except Exception as e:
-            print(f"[WARNING] Failed to initialize VelocityPose visualizer: {e}")
-
     # reset environment
     obs = env.get_observations()
     timestep = 0
@@ -282,28 +326,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             obs, _, dones, _ = env.step(actions)
             # reset recurrent states for episodes that have terminated
             policy_nn.reset(dones)
-            
-            # Update command visualization if enabled
-            if visualizer is not None:
-                try:
-                    # Get current commands from the environment
-                    command_manager = env.unwrapped.command_manager
-                    if hasattr(command_manager, "get_command"):
-                        commands = command_manager.get_command("base_velocity_pose")
-                    else:
-                        # Fallback: get from the term directly
-                        commands = command_manager._terms["base_velocity_pose"].command
-                    
-                    # Get robot articulation
-                    robot = env.unwrapped.scene["robot"]
-                    
-                    # Update visualization
-                    visualizer.update(commands, robot)
-                except Exception as e:
-                    print(f"[WARNING] Visualizer update failed: {e}")
-                    
+
+        timestep += 1
+        if args_cli.max_steps > 0 and timestep >= args_cli.max_steps:
+            break
         if args_cli.video:
-            timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
@@ -316,6 +343,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.real_time and sleep_time > 0:
             time.sleep(sleep_time)
 
+    print(f"[INFO] Playback completed: {timestep} steps; environment policy steps: {env.unwrapped.common_step_counter}")
     # close the simulator
     env.close()
 

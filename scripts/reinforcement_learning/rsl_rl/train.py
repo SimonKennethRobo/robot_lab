@@ -17,6 +17,7 @@ from isaaclab.app import AppLauncher
 
 # local imports
 import cli_args  # isort: skip
+from robustness_cli import normalize_robustness_float_overrides  # isort: skip
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -42,6 +43,10 @@ cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+normalized_hydra_args = normalize_robustness_float_overrides(hydra_args)
+if normalized_hydra_args != hydra_args:
+    print("[INFO] Normalized integer robustness overrides to float literals for IsaacLab.")
+hydra_args = normalized_hydra_args
 
 # always enable cameras to record video
 if args_cli.video:
@@ -167,6 +172,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the log directory for the environment (works for all environment types)
     env_cfg.log_dir = log_dir
 
+    if getattr(env_cfg, "robustness", None) is not None:
+        env_cfg.robustness.steps_per_iteration = agent_cfg.num_steps_per_env
+        env_cfg.robustness.metrics_interval = agent_cfg.num_steps_per_env
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -197,12 +206,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # create runner from rsl-rl
     if agent_cfg.class_name == "OnPolicyRunner":
-        runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
+        runner_type = OnPolicyRunner
+        if getattr(env_cfg, "robustness", None) is not None:
+            from robot_lab.tasks.manager_based.locomotion.velocity_pose.robustness_runner import (
+                LocomotionOnPolicyRunner,
+            )
+
+            runner_type = LocomotionOnPolicyRunner
+        runner = runner_type(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     elif agent_cfg.class_name == "DistillationRunner":
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    
+
     # CURRICULUM FIX: Patch environment to track RSL-RL iteration
     # Store reference to runner in environment for curriculum access
     env.unwrapped._rsl_rl_runner = runner  # type: ignore[attr-defined]

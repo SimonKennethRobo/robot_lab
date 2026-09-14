@@ -14,8 +14,7 @@ import torch
 from typing import Any
 
 from isaaclab.envs import ManagerBasedRLEnv, ManagerBasedRLEnvCfg
-from isaaclab.managers import SceneEntityCfg
-
+from .mdp.shared.robustness import prepare_robustness_cfg, runtime_for
 from .mdp.shared.visualizers import VelocityPoseCommandVisualizer
 
 
@@ -39,11 +38,25 @@ class VelocityPoseEnv(ManagerBasedRLEnv):
             render_mode: Render mode for the environment.
             **kwargs: Additional arguments.
         """
+        if getattr(cfg, "robustness", None) is not None:
+            prepare_robustness_cfg(cfg)
         super().__init__(cfg, render_mode, **kwargs)
         
         # Initialize pose visualizer (will be set up after first reset)
         self._pose_visualizer = None
         self._visualizer_initialized = False
+
+    def set_locomotion_iteration(self, iteration: int):
+        """Restore the policy-step curriculum clock after checkpoint loading."""
+        if getattr(self.cfg, "robustness", None) is not None:
+            runtime = runtime_for(self)
+            runtime.step_offset = iteration * runtime.cfg.steps_per_iteration - self.common_step_counter
+            runtime.update_command_ranges()
+
+    def _reset_idx(self, env_ids):
+        if hasattr(self, "_locomotion") and getattr(self, "_collecting_transition", False):
+            self._locomotion.record_completed(env_ids)
+        super()._reset_idx(env_ids)
         
     def reset(self, seed: int | None = None, options: dict | None = None):
         """Reset environment and initialize visualizer on first reset.
@@ -68,7 +81,7 @@ class VelocityPoseEnv(ManagerBasedRLEnv):
                             if hasattr(term, 'cfg') and hasattr(term.cfg, 'debug_vis'):
                                 if term.cfg.debug_vis:
                                     self._pose_visualizer = VelocityPoseCommandVisualizer(
-                                        self, self.num_envs
+                                        self, min(self.num_envs, 8)
                                     )
                                     print("[VelocityPoseEnv] Pose visualizer initialized successfully")
                                 else:
@@ -93,7 +106,21 @@ class VelocityPoseEnv(ManagerBasedRLEnv):
             Tuple of (obs, rew, terminated, truncated, info)
         """
         # Execute normal step
-        result = super().step(action)
+        self._collecting_transition = True
+        try:
+            result = super().step(action)
+        finally:
+            self._collecting_transition = False
+        if hasattr(self, "_locomotion"):
+            self._locomotion.check_finite(reward=result[1], **result[0])
+            if self.common_step_counter % self.cfg.robustness.metrics_interval == 0:
+                metrics = self._locomotion.flush_metrics()
+                # The full cohort/age breakdown lives in locomotion_metrics.jsonl.
+                # Keep the per-iteration PPO console and logger compact.
+                self.extras.setdefault("log", {}).update({
+                    key: value for key, value in metrics.items()
+                    if "/all/all/" in key or key.startswith("Curriculum/") or key.endswith("failure_fraction")
+                })
         
         # Update visualization if enabled
         if self._pose_visualizer is not None:
@@ -102,4 +129,3 @@ class VelocityPoseEnv(ManagerBasedRLEnv):
             self._pose_visualizer.update(command, robot)
         
         return result
-

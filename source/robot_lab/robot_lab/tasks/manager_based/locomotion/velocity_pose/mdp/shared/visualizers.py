@@ -167,11 +167,14 @@ class VelocityPoseCommandVisualizer:
             robot: Robot articulation
         """
         # Get current base position and orientation
-        base_pos_w = robot.data.root_pos_w
-        base_quat_w = robot.data.root_quat_w
+        commands = commands[:self.num_envs]
+        base_pos_w = robot.data.root_pos_w[:self.num_envs]
+        base_quat_w = robot.data.root_quat_w[:self.num_envs]
         
         # Parse target commands
-        target_height = commands[:, 3]
+        from .robustness import terrain_height
+        ground, _ = terrain_height(self.env)
+        target_height = commands[:, 3] + ground[:self.num_envs]
         target_roll = commands[:, 4]
         target_pitch = commands[:, 5]
         
@@ -244,15 +247,15 @@ class VelocityPoseCommandVisualizer:
             roll: (N,) Current roll angle (radians)
             pitch: (N,) Current pitch angle (radians)
         """
-        projected_gravity = robot.data.projected_gravity_b
+        projected_gravity = robot.data.projected_gravity_b[:self.num_envs]
         
         gx = projected_gravity[:, 0]
         gy = projected_gravity[:, 1]
         gz = projected_gravity[:, 2]
         
         # Compute roll and pitch from gravity projection
-        roll = torch.atan2(gy, gz)
-        pitch = torch.atan2(-gx, torch.sqrt(gy**2 + gz**2))
+        roll = torch.atan2(-gy, -gz)
+        pitch = torch.atan2(gx, torch.sqrt(gy**2 + gz**2))
         
         return roll, pitch
     
@@ -333,7 +336,6 @@ class VelocityPoseCommandVisualizer:
         Returns:
             rotated_vec: (N, 3) Rotated vector
         """
-        from isaaclab.utils.math import quat_apply
         return quat_apply(quat, vec)
     
     def _quat_multiply(self, q1: torch.Tensor, q2: torch.Tensor) -> torch.Tensor:
