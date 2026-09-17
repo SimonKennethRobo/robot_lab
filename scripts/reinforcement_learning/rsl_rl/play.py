@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025 Ziqi Fan
+# Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -52,6 +52,14 @@ parser.add_argument(
     "--max_steps", type=int, default=0, help="Stop after this many playback steps; 0 runs continuously."
 )
 parser.add_argument(
+    "--camera_follow_env0",
+    action="store_true",
+    help="Continuously track the robot root in environment 0 with the viewport camera.",
+)
+parser.add_argument("--yaw_height_trace", action="store_true", help="Replay the fixed 24 s yaw/height trace.")
+parser.add_argument("--trace_sign", type=int, choices=[-1, 1], default=1)
+parser.add_argument("--trace_output", type=str, default=None, help="JSONL output for --yaw_height_trace.")
+parser.add_argument(
     "--curriculum_stage",
     type=int,
     default=4,
@@ -96,9 +104,11 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import json
 import os
 import time
 import torch
+from pathlib import Path
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
@@ -127,7 +137,9 @@ from rl_utils import camera_follow
 
 
 @hydra_task_config(args_cli.task, args_cli.agent)
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg):
+def main(  # noqa: C901
+    env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlBaseRunnerCfg
+):
     """Play with RSL-RL agent."""
     # grab task name for checkpoint path
     task_name = args_cli.task.split(":")[-1]
@@ -159,6 +171,18 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env_cfg.curriculum.command_levels_lin_vel = None
     env_cfg.curriculum.command_levels_ang_vel = None
 
+    if args_cli.yaw_height_trace:
+        if args_cli.trace_output is None:
+            raise ValueError("--trace_output is required with --yaw_height_trace")
+        env_cfg.scene.num_envs = 1
+        env_cfg.episode_length_s = 30.0
+        env_cfg.terminations.time_out = None
+        env_cfg.events.randomize_push_robot = None
+        command_cfg = env_cfg.commands.base_velocity_pose
+        command_cfg.resampling_time_range = (1.0e9, 1.0e9)
+        command_cfg.rel_standing_envs = 0.0
+        command_cfg.heading_command = False
+
     if args_cli.keyboard:
         env_cfg.scene.num_envs = 1
         env_cfg.terminations.time_out = None
@@ -184,6 +208,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             return velocity
 
         env_cfg.observations.policy.velocity_commands = ObsTerm(func=keyboard_commands)
+
+    if args_cli.camera_follow_env0:
+        env_cfg.viewer.origin_type = "asset_root"
+        env_cfg.viewer.env_index = 0
+        env_cfg.viewer.asset_name = "robot"
+        env_cfg.viewer.eye = (-3.0, 0.0, 0.6)
+        env_cfg.viewer.lookat = (0.0, 0.0, 0.25)
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -282,7 +313,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         runner = DistillationRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     else:
         raise ValueError(f"Unsupported runner class: {agent_cfg.class_name}")
-    runner.load(resume_path)
+    if hasattr(runner, "load_warm_start"):
+        checkpoint_state = torch.load(resume_path, map_location="cpu", weights_only=False).get("model_state_dict", {})
+        if "std" in checkpoint_state and "log_std" in runner.alg.policy.state_dict():
+            runner.load_warm_start(resume_path, map_location=agent_cfg.device)
+        else:
+            runner.load(resume_path)
+    else:
+        runner.load(resume_path)
 
     # obtain the trained policy for inference
     policy = runner.get_inference_policy(device=env.unwrapped.device)
@@ -314,34 +352,99 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs = env.get_observations()
     timestep = 0
-    # simulate environment
-    while simulation_app.is_running():
-        start_time = time.time()
-        # run everything in inference mode
-        with torch.inference_mode():
-            # agent stepping
-            actions = policy(obs)
-            # actions = torch.zeros_like(actions)
-            # env stepping
-            obs, _, dones, _ = env.step(actions)
-            # reset recurrent states for episodes that have terminated
-            policy_nn.reset(dones)
+    trace_stream = None
+    trace_path = None
+    if args_cli.yaw_height_trace:
+        trace_path = Path(args_cli.trace_output).resolve()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        trace_stream = trace_path.open("w")
+        args_cli.max_steps = 1200
 
-        timestep += 1
-        if args_cli.max_steps > 0 and timestep >= args_cli.max_steps:
-            break
-        if args_cli.video:
-            # Exit the play loop after recording one video
-            if timestep == args_cli.video_length:
+    def trace_command(step):
+        second = step * env.unwrapped.step_dt
+        if second < 2.0:
+            vx, wz = 0.0, 0.0
+        elif second < 6.0:
+            vx, wz = 0.0, 0.4
+        elif second < 8.0:
+            vx, wz = 0.0, 0.0
+        elif second < 12.0:
+            vx, wz = 0.0, 0.8
+        elif second < 14.0:
+            vx, wz = 0.0, 0.0
+        elif second < 18.0:
+            vx, wz = 0.0, -0.8
+        elif second < 22.0:
+            vx, wz = 0.4, 0.8
+        else:
+            vx, wz = 0.0, 0.0
+        return vx, args_cli.trace_sign * wz
+
+    # simulate environment
+    try:
+        while simulation_app.is_running():
+            start_time = time.time()
+            with torch.inference_mode():
+                if args_cli.yaw_height_trace:
+                    vx, wz = trace_command(timestep)
+                    command_term = env.unwrapped.command_manager.get_term("base_velocity_pose")
+                    command_term.vel_command_b[:] = torch.tensor((vx, 0.0, wz), device=env.unwrapped.device)
+                    command_term.height_command[:] = 0.33
+                    command_term.pose_command[:] = 0.0
+                    obs = env.get_observations()
+                actions = policy(obs)
+                executed_actions = (
+                    torch.clamp(actions, -agent_cfg.clip_actions, agent_cfg.clip_actions)
+                    if agent_cfg.clip_actions is not None
+                    else actions
+                )
+                obs, _, dones, _ = env.step(actions)
+                policy_nn.reset(dones)
+
+                if trace_stream is not None:
+                    from robot_lab.tasks.manager_based.locomotion.velocity_pose.mdp.shared.robustness import (
+                        terrain_height,
+                    )
+
+                    robot = env.unwrapped.scene["robot"]
+                    ground, ground_valid = terrain_height(env.unwrapped)
+                    action_term = env.unwrapped.action_manager.get_term("joint_pos")
+                    row = {
+                        "step": timestep,
+                        "time_s": timestep * env.unwrapped.step_dt,
+                        "command": command_term.command[0].tolist(),
+                        "root_pos_w": robot.data.root_pos_w[0].tolist(),
+                        "root_quat_w": robot.data.root_quat_w[0].tolist(),
+                        "root_lin_vel_w": robot.data.root_lin_vel_w[0].tolist(),
+                        "root_ang_vel_w": robot.data.root_ang_vel_w[0].tolist(),
+                        "projected_gravity_b": robot.data.projected_gravity_b[0].tolist(),
+                        "ground_height": float(ground[0]),
+                        "ground_valid": bool(ground_valid[0]),
+                        "terrain_relative_height": float(robot.data.root_pos_w[0, 2] - ground[0]),
+                        "actor_action": actions[0].tolist(),
+                        "executed_action": executed_actions[0].tolist(),
+                        "action_term_raw": action_term.raw_actions[0].tolist(),
+                        "joint_position_target": action_term.processed_actions[0].tolist(),
+                        "applied_torque": robot.data.applied_torque[0, action_term._joint_ids].tolist(),
+                        "done": bool(dones[0]),
+                    }
+                    trace_stream.write(json.dumps(row, allow_nan=False) + "\n")
+
+            timestep += 1
+            if args_cli.max_steps > 0 and timestep >= args_cli.max_steps:
+                break
+            if args_cli.video and timestep == args_cli.video_length:
                 break
 
-        if args_cli.keyboard:
-            camera_follow(env)
+            if args_cli.keyboard and not args_cli.camera_follow_env0:
+                camera_follow(env)
 
-        # time delay for real-time evaluation
-        sleep_time = dt - (time.time() - start_time)
-        if args_cli.real_time and sleep_time > 0:
-            time.sleep(sleep_time)
+            sleep_time = dt - (time.time() - start_time)
+            if args_cli.real_time and sleep_time > 0:
+                time.sleep(sleep_time)
+    finally:
+        if trace_stream is not None:
+            trace_stream.close()
 
     print(f"[INFO] Playback completed: {timestep} steps; environment policy steps: {env.unwrapped.common_step_counter}")
     # close the simulator
