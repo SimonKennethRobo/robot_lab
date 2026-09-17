@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025 Ziqi Fan  
+# Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
 """RSL-RL PPO configuration for Unitree GO2 + ARX5 (Stage 1)."""
@@ -13,20 +13,23 @@ from robot_lab.tasks.manager_based.locomotion.velocity_pose.config.quadruped.uni
 @configclass
 class UnitreeGo2X5VelocityPoseRoughPPORunnerCfg(UnitreeGo2VelocityPoseRoughPPORunnerCfg):
     """PPO runner configuration for GO2+X5 Stage 1."""
-    
+
     def __post_init__(self):
         super().__post_init__()
-        
+
         # Set correct experiment name for GO2+X5
         self.experiment_name = "unitree_go2_x5_velocity_pose_rough"
-        
+        self.logger = "wandb"
+
         # 64D proprioception -> 512 -> 256 -> 128 -> 12 leg actions.
         self.policy.class_name = "ActorCritic"
-        
+
         # Initial budget: 8k curriculum + 12k at full intensity. Extend from
         # checkpoints only if tracking/failure metrics justify more training.
         self.max_iterations = 20000
-        
+        self.policy.noise_std_type = "log"
+        self.clip_actions = 3.0
+
         # Learning rate schedule
         self.policy.init_noise_std = 1.0
         self.algorithm.learning_rate = 5e-4
@@ -34,7 +37,7 @@ class UnitreeGo2X5VelocityPoseRoughPPORunnerCfg(UnitreeGo2VelocityPoseRoughPPORu
         self.algorithm.gamma = 0.99
         self.algorithm.lam = 0.95
         self.algorithm.desired_kl = 0.01
-        
+
         # PPO-specific
         self.algorithm.entropy_coef = 0.01
         self.algorithm.num_learning_epochs = 5
@@ -44,13 +47,13 @@ class UnitreeGo2X5VelocityPoseRoughPPORunnerCfg(UnitreeGo2VelocityPoseRoughPPORu
 @configclass
 class UnitreeGo2X5VelocityPoseFlatPPORunnerCfg(UnitreeGo2X5VelocityPoseRoughPPORunnerCfg):
     """PPO runner configuration for flat terrain."""
-    
+
     def __post_init__(self):
         super().__post_init__()
-        
+
         # Set correct experiment name for GO2+X5 Flat
         self.experiment_name = "unitree_go2_x5_velocity_pose_flat"
-        
+
         # Flat terrain can be slightly easier
         self.algorithm.learning_rate = 5e-4
 

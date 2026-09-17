@@ -1,4 +1,4 @@
-# Copyright (c) 2024-2025 Ziqi Fan
+# Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
 # Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
@@ -30,6 +30,12 @@ parser.add_argument(
     "--agent", type=str, default="rsl_rl_cfg_entry_point", help="Name of the RL agent configuration entry point."
 )
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
+parser.add_argument(
+    "--warm_start",
+    type=str,
+    default=None,
+    help="Finite locomotion checkpoint for weight-only initialization; optimizer state is not restored.",
+)
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
     "--distributed", action="store_true", default=False, help="Run training with multiple GPUs or nodes."
@@ -84,11 +90,14 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 """Rest everything follows."""
 
 import gymnasium as gym
+import hashlib
+import json
 import logging
 import os
 import time
 import torch
 from datetime import datetime
+from pathlib import Path
 
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
@@ -123,6 +132,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    if agent_cfg.logger == "wandb":
+        os.environ["WANDB_MODE"] = "online"
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -183,6 +194,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    if args_cli.warm_start and (agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation"):
+        raise ValueError("--warm_start cannot be combined with --resume or distillation")
+
     # save resume path before creating a new log_dir
     if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
@@ -224,11 +238,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env.unwrapped._rsl_rl_runner = runner  # type: ignore[attr-defined]
     # write git state to logs
     runner.add_git_repo_to_log(__file__)
+    start_iteration = runner.current_learning_iteration
     # load the checkpoint
-    if agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
+    if args_cli.warm_start:
+        if not isinstance(runner, LocomotionOnPolicyRunner):
+            raise ValueError("--warm_start is only supported for the robust locomotion runner")
+        print(f"[INFO]: Weight-only warm start from: {args_cli.warm_start}")
+        runner.load_warm_start(args_cli.warm_start, map_location=agent_cfg.device)
+        start_iteration = runner.current_learning_iteration
+    elif agent_cfg.resume or agent_cfg.algorithm.class_name == "Distillation":
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+        start_iteration = runner.current_learning_iteration
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
@@ -237,14 +259,53 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
+    final_path = Path(log_dir) / f"model_{runner.current_learning_iteration}.pt"
+    checkpoint = torch.load(final_path, map_location="cpu", weights_only=False)
+    bad_tensors = [
+        name
+        for name, value in checkpoint.get("model_state_dict", {}).items()
+        if torch.is_tensor(value) and value.is_floating_point() and not torch.isfinite(value).all()
+    ]
+    if bad_tensors:
+        raise FloatingPointError(f"Final checkpoint contains non-finite tensors: {bad_tensors}")
+    receipt = {
+        "status": "success",
+        "run_dir": str(Path(log_dir).resolve()),
+        "final_checkpoint": str(final_path.resolve()),
+        "final_checkpoint_sha256": hashlib.sha256(final_path.read_bytes()).hexdigest(),
+        "start_iteration": int(start_iteration),
+        "final_iteration": int(runner.current_learning_iteration),
+        "completed_updates": int(runner.current_learning_iteration - start_iteration + 1),
+        "target_updates": int(agent_cfg.max_iterations),
+        "finished_at": datetime.now().astimezone().isoformat(),
+    }
+    final_metadata = (checkpoint.get("infos") or {}).get("locomotion", {})
+    receipt["contract"] = final_metadata.get("contract")
+    receipt["warm_start"] = final_metadata.get("warm_start")
+    receipt["logger"] = agent_cfg.logger
+    if agent_cfg.logger == "wandb":
+        import wandb
+
+        receipt["wandb_mode"] = os.environ["WANDB_MODE"]
+        receipt["wandb_run_url"] = wandb.run.url if wandb.run is not None else None
+    if receipt["completed_updates"] != receipt["target_updates"]:
+        raise RuntimeError(f"Training update count mismatch: {receipt}")
+    receipt_path = Path(os.environ.get("TRAINING_RECEIPT_PATH", Path(log_dir) / "training_success.json"))
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = receipt_path.with_suffix(receipt_path.suffix + ".tmp")
+    temporary.write_text(json.dumps(receipt, indent=2) + "\n")
+    os.replace(temporary, receipt_path)
+
     print(f"Training time: {round(time.time() - start_time, 2)} seconds")
 
     # close the simulator
     env.close()
+    if agent_cfg.logger == "wandb":
+        wandb.finish(exit_code=0)
 
 
 if __name__ == "__main__":
-    # run the main function
-    main()
-    # close sim app
-    simulation_app.close()
+    try:
+        main()
+    finally:
+        simulation_app.close()
