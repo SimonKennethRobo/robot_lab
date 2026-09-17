@@ -9,14 +9,36 @@ import time
 import torch
 from pathlib import Path
 
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.math import quat_apply, quat_apply_inverse, quat_from_euler_xyz, yaw_quat
 
-from .robustness_math import contact_slip, fixed_hard_mask, gravity_wrench, ground_height, ramp
+from robot_lab.tasks.manager_based.locomotion.velocity.mdp.rewards import (
+    feet_air_time_variance_penalty,
+    feet_distance_y_exp,
+    feet_height_body,
+)
+
+from .robustness_math import RecoveryTracker, contact_slip, fixed_hard_mask, gravity_wrench, ground_height, ramp
 
 
-def prepare_robustness_cfg(cfg):
+def prepare_robustness_cfg(cfg):  # noqa: C901
     """Apply DR mode after CLI overrides, before assets/actuators are created."""
+    from ...recovery_recipes import apply_recovery_recipe
+
     settings = cfg.robustness
+    apply_recovery_recipe(settings)
+    layouts = ("go2_x5_locomotion_v2_64", "go2_x5_locomotion_v3_65")
+    if settings.observation_layout not in layouts:
+        raise ValueError(f"robustness.observation_layout must be one of {layouts}")
+    if settings.observation_layout == "go2_x5_locomotion_v3_65":
+        term = ObsTerm(func=terrain_relative_height_error, clip=(-0.2, 0.2))
+        cfg.observations.policy.height_error = term
+        cfg.observations.critic.height_error = ObsTerm(func=terrain_relative_height_error, clip=(-0.2, 0.2))
+    else:
+        cfg.observations.policy.height_error = None
+        cfg.observations.critic.height_error = None
     if settings.domain_rand not in ("none", "benchmark", "sim2real"):
         raise ValueError("robustness.domain_rand must be none, benchmark or sim2real")
     if settings.steps_per_iteration <= 0 or settings.metrics_interval <= 0:
@@ -25,6 +47,103 @@ def prepare_robustness_cfg(cfg):
         ramp(0, getattr(settings, name + "_start"), getattr(settings, name + "_end"))
     if not 0 < settings.arm_workspace_fraction <= 1:
         raise ValueError("arm_workspace_fraction must be in (0, 1]")
+    if settings.arm_accel_resample_time_s <= 0:
+        raise ValueError("arm_accel_resample_time_s must be positive")
+    if not 0 <= settings.arm_zero_accel_probability <= 1 or not 0 <= settings.arm_zero_velocity_probability <= 1:
+        raise ValueError("arm zero probabilities must be in [0, 1]")
+    if settings.arm_init_joint_noise < 0:
+        raise ValueError("arm_init_joint_noise must be nonnegative")
+    if not 0 <= settings.nearfall_reset_fraction <= settings.hard_fraction:
+        raise ValueError("Near-fall resets must be a subset of the hard cohort")
+    if (
+        not 0
+        < settings.nearfall_reset_min_degrees
+        <= settings.nearfall_reset_max_degrees
+        < settings.failure_tilt_degrees
+    ):
+        raise ValueError("Near-fall reset angles must be positive and below failure tilt")
+    if settings.nearfall_reset_angular_speed < 0 or not 0 < settings.recovery_action_rate_scale <= 1:
+        raise ValueError("Invalid recovery angular-speed or action-rate scale")
+    if settings.recovery_upright_weight < 0:
+        raise ValueError("Recovery upright cost weight must be nonnegative")
+    if settings.stance_width_target_m < 0 or settings.stance_width_reward_weight < 0:
+        raise ValueError("Stance-width target and reward weight must be nonnegative")
+    if settings.stance_width_reward_weight > 0 and (
+        settings.stance_width_target_m <= 0 or settings.stance_width_std_m <= 0
+    ):
+        raise ValueError("Enabled stance-width reward requires positive target and std")
+    if settings.rear_stance_width_target_m < 0 or settings.rear_stance_width_reward_weight < 0:
+        raise ValueError("Rear stance-width target and reward weight must be nonnegative")
+    if settings.rear_stance_width_reward_weight > 0 and (
+        settings.rear_stance_width_target_m <= 0 or settings.rear_stance_width_std_m <= 0
+    ):
+        raise ValueError("Enabled rear stance-width reward requires positive target and std")
+    gait_weights = (
+        settings.gait_timing_variance_cost_weight,
+        settings.gait_swing_height_cost_weight,
+        settings.gait_joint_velocity_mirror_cost_weight,
+        settings.gait_contact_sync_reward_weight,
+    )
+    if any(weight < 0 for weight in gait_weights):
+        raise ValueError("Gait symmetry cost/reward weights must be nonnegative")
+    if settings.gait_swing_height_cost_weight > 0 and settings.gait_swing_height_body_target_m >= 0:
+        raise ValueError("Enabled swing-height cost requires a negative body-frame foot-height target")
+    if settings.recovery_action_rate_scale < 1:
+        cfg.rewards.action_rate_l2.func = recovery_action_rate_l2
+    if settings.recovery_upright_weight > 0:
+        cfg.rewards.recovery_upright = RewTerm(func=recovery_upright_cost, weight=-settings.recovery_upright_weight)
+    if settings.stance_width_reward_weight > 0:
+        cfg.rewards.feet_distance_y_exp = RewTerm(
+            func=feet_distance_y_exp,
+            weight=settings.stance_width_reward_weight,
+            params={
+                "stance_width": settings.stance_width_target_m,
+                "std": settings.stance_width_std_m,
+                "asset_cfg": SceneEntityCfg(
+                    "robot", body_names=[f"{leg}_foot" for leg in ("FL", "FR", "RL", "RR")], preserve_order=True
+                ),
+            },
+        )
+    if settings.rear_stance_width_reward_weight > 0:
+        cfg.rewards.rear_feet_distance_y_exp = RewTerm(
+            func=feet_distance_y_exp,
+            weight=settings.rear_stance_width_reward_weight,
+            params={
+                "stance_width": settings.rear_stance_width_target_m,
+                "std": settings.rear_stance_width_std_m,
+                "asset_cfg": SceneEntityCfg(
+                    "robot", body_names=[f"{leg}_foot" for leg in ("RL", "RR")], preserve_order=True
+                ),
+            },
+        )
+    foot_names = [f"{leg}_foot" for leg in ("FL", "FR", "RL", "RR")]
+    if settings.gait_timing_variance_cost_weight > 0:
+        cfg.rewards.feet_air_time_variance = RewTerm(
+            func=feet_air_time_variance_penalty,
+            weight=-settings.gait_timing_variance_cost_weight,
+            params={"sensor_cfg": SceneEntityCfg("contact_forces", body_names=foot_names, preserve_order=True)},
+        )
+    if settings.gait_swing_height_cost_weight > 0:
+        cfg.rewards.feet_height_body = RewTerm(
+            func=feet_height_body,
+            weight=-settings.gait_swing_height_cost_weight,
+            params={
+                "command_name": "base_velocity_pose",
+                "asset_cfg": SceneEntityCfg("robot", body_names=foot_names, preserve_order=True),
+                "target_height": settings.gait_swing_height_body_target_m,
+                "tanh_mult": 2.0,
+            },
+        )
+    if settings.gait_joint_velocity_mirror_cost_weight > 0:
+        cfg.rewards.joint_velocity_mirror = RewTerm(
+            func=diagonal_leg_joint_velocity_mirror_cost,
+            weight=-settings.gait_joint_velocity_mirror_cost_weight,
+            params={
+                "asset_cfg": SceneEntityCfg("robot"),
+                "mirror_joints": [["FR.*", "RL.*"], ["FL.*", "RR.*"]],
+            },
+        )
+    cfg.rewards.feet_gait.weight = settings.gait_contact_sync_reward_weight
     if settings.domain_rand != "sim2real":
         cfg.observations.policy.enable_corruption = False
         cfg.events.randomize_actuator_gains = None
@@ -37,10 +156,37 @@ def prepare_robustness_cfg(cfg):
             "randomize_rigid_body_material",
             "randomize_rigid_body_mass_base",
             "randomize_rigid_body_mass_others",
+            "randomize_arm_link_mass",
             "randomize_com_positions",
+            "randomize_arm_com_positions",
             "randomize_push_robot",
         ):
             setattr(cfg.events, name, None)
+
+
+def diagonal_leg_joint_velocity_mirror_cost(env, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]):
+    """Penalize unequal speed magnitudes within the two diagonal trot pairs.
+
+    Unlike the generic action-mirror term, this indexes the articulation's joint
+    velocity tensor and is therefore valid when the 12D leg action is attached to
+    an 18-joint quadruped-manipulator articulation.
+    """
+    asset = env.scene[asset_cfg.name]
+    cache_name = "_diagonal_leg_joint_velocity_pairs"
+    if not hasattr(env, cache_name):
+        setattr(
+            env,
+            cache_name,
+            [[asset.find_joints(pattern)[0] for pattern in pair] for pair in mirror_joints],
+        )
+    cost = torch.zeros(env.num_envs, device=env.device)
+    for first_ids, second_ids in getattr(env, cache_name):
+        first_speed = torch.abs(asset.data.joint_vel[:, first_ids])
+        second_speed = torch.abs(asset.data.joint_vel[:, second_ids])
+        cost += torch.mean(torch.square(first_speed - second_speed), dim=-1)
+    cost /= max(len(mirror_joints), 1)
+    cost *= torch.clamp(-asset.data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
+    return cost
 
 
 def terrain_height(env):
@@ -49,6 +195,14 @@ def terrain_height(env):
     if sensor is None:
         return fallback, torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
     return ground_height(sensor.data.ray_hits_w[..., 2], fallback)
+
+
+def terrain_relative_height_error(env):
+    """Commanded minus measured base height using the reward's ground reference."""
+    ground, _ = terrain_height(env)
+    command = env.command_manager.get_command("base_velocity_pose")[:, 3]
+    measured = env.scene["robot"].data.root_pos_w[:, 2] - ground
+    return (command - measured).unsqueeze(-1)
 
 
 class LocomotionRuntime:
@@ -64,6 +218,21 @@ class LocomotionRuntime:
         "arm_torque_saturation",
         "ee_base_vz_mps",
         "invalid_height_scan",
+        "foot_width_m",
+        "front_foot_width_m",
+        "rear_foot_width_m",
+        "swing_height_fl_m",
+        "swing_height_fr_m",
+        "swing_height_rl_m",
+        "swing_height_rr_m",
+        "swing_speed_fl_mps",
+        "swing_speed_fr_mps",
+        "swing_speed_rl_mps",
+        "swing_speed_rr_mps",
+        "air_time_fl_s",
+        "air_time_fr_s",
+        "air_time_rl_s",
+        "air_time_rr_s",
     )
     group_names = tuple(f"{cohort}/{age}" for cohort in ("all", "easy", "hard") for age in ("all", "early", "late"))
 
@@ -71,6 +240,11 @@ class LocomotionRuntime:
         self.env, self.cfg = env, env.cfg.robustness
         self.robot = env.scene["robot"]
         self.hard = fixed_hard_mask(env.num_envs, self.cfg.hard_fraction, self.cfg.cohort_seed, env.device)
+        self.nearfall = fixed_hard_mask(
+            env.num_envs, self.cfg.nearfall_reset_fraction, self.cfg.cohort_seed, env.device
+        )
+        self.recovery = RecoveryTracker(env.num_envs, env.device, env.step_dt) if self.cfg.recovery_metrics else None
+        self.window_maxima = {}
         self.arm_ids = self.robot.find_joints([f"joint{i}" for i in range(1, 7)], preserve_order=True)[0]
         feet = [f"{leg}_foot" for leg in ("FL", "FR", "RL", "RR")]
         self.feet_ids = self.robot.find_bodies(feet, preserve_order=True)[0]
@@ -110,6 +284,8 @@ class LocomotionRuntime:
         command.cfg.ranges.pitch = tuple(x * progress for x in self.cfg.pitch_range)
 
     def reset(self, env_ids):
+        if self.recovery is not None:
+            self.recovery.reset(env_ids)
         self.failure_age[env_ids] = 0
         self.age[env_ids] = 0
         self.velocity_valid[env_ids] = False
@@ -182,6 +358,17 @@ class LocomotionRuntime:
         # Velocity induced at the actual EE point by base translation and rotation.
         ee_offset = data.body_pos_w[:, self.ee_id] - data.root_pos_w
         ee_base_velocity = data.root_link_lin_vel_w + torch.cross(data.root_ang_vel_w, ee_offset, dim=-1)
+        feet_in_yaw = quat_apply_inverse(
+            yaw_quat(data.root_quat_w).unsqueeze(1).expand(-1, len(self.feet_ids), -1),
+            data.body_pos_w[:, self.feet_ids] - data.root_pos_w.unsqueeze(1),
+        )
+        front_foot_width = (feet_in_yaw[:, 0, 1] - feet_in_yaw[:, 1, 1]).abs()
+        rear_foot_width = (feet_in_yaw[:, 2, 1] - feet_in_yaw[:, 3, 1]).abs()
+        foot_width = 0.5 * (front_foot_width + rear_foot_width)
+        swing = sensor.data.current_air_time[:, self.contact_ids] > 0.0
+        swing_height = (data.body_pos_w[:, self.feet_ids, 2] - height.unsqueeze(-1)) * swing
+        swing_speed = torch.linalg.norm(data.body_lin_vel_w[:, self.feet_ids, :2], dim=-1) * swing
+        air_time = sensor.data.current_air_time[:, self.contact_ids]
         errors = torch.stack(
             (
                 lin_vel[:, 0] - cmd[:, 0],
@@ -195,9 +382,13 @@ class LocomotionRuntime:
                 saturated,
                 ee_base_velocity[:, 2],
                 (~valid_scan).float(),
+                foot_width,
+                front_foot_width,
+                rear_foot_width,
             ),
             dim=-1,
         )
+        errors = torch.cat((errors, swing_height, swing_speed, air_time), dim=-1)
         self.age += env.step_dt
         cohorts = torch.stack((torch.ones_like(self.hard), ~self.hard, self.hard))
         ages = torch.stack((torch.ones_like(self.hard), self.age <= 2.0, self.age > 2.0))
@@ -207,6 +398,7 @@ class LocomotionRuntime:
         self.counts += masks.sum(-1)
         sample_valid = torch.ones_like(errors)
         sample_valid[:, 7] = self.velocity_valid.float()
+        sample_valid[:, 14:26] = swing.repeat(1, 3)
         self.value_counts += masks @ sample_valid
         self.previous_arm_velocity.copy_(arm_v)
         self.velocity_valid[:] = True
@@ -214,9 +406,30 @@ class LocomotionRuntime:
             current_height < self.cfg.failure_height_m
         )
         self.failure_age = torch.where(fallen, self.failure_age + env.step_dt, 0.0)
-        return (self.failure_age >= self.cfg.recovery_grace_s) & self.cfg.terminate_unrecovered
+        failed = (self.failure_age >= self.cfg.recovery_grace_s) & self.cfg.terminate_unrecovered
+        if self.recovery is not None:
+            absolute_tilt = (-data.projected_gravity_b[:, 2]).clamp(-1, 1).acos()
+            self.recovery.update(
+                absolute_tilt, current_height, data.root_ang_vel_b[:, :2].norm(dim=-1), self.age, failed
+            )
+            values = {
+                "joint_velocity_abs_max_radps": data.joint_vel.abs().max(),
+                "arm_velocity_abs_max_radps": arm_v.abs().max(),
+                "arm_acceleration_abs_max_radps2": arm_a.abs().max(),
+                "applied_torque_abs_max_nm": data.applied_torque.abs().max(),
+                "root_angular_velocity_max_radps": data.root_ang_vel_w.norm(dim=-1).max(),
+                "executed_action_abs_max": env.action_manager.action.abs().max(),
+                "action_rate_l2_max": (
+                    (env.action_manager.action - env.action_manager.prev_action).square().sum(-1).max()
+                ),
+            }
+            for name, value in values.items():
+                self.window_maxima[name] = torch.maximum(self.window_maxima.get(name, torch.zeros_like(value)), value)
+        return failed
 
     def record_completed(self, env_ids):
+        if self.recovery is not None:
+            self.recovery.reset(env_ids, self.env.reset_terminated[env_ids])
         # Initial explicit reset is not a completed episode; PPO randomized episode
         # lengths do not affect the independently tracked early/late sample age.
         valid = self.age[env_ids] > 0
@@ -229,13 +442,17 @@ class LocomotionRuntime:
         counts = self.value_counts.clamp_min(1)
         means, rms = self.sums / counts, (self.squares / counts).sqrt()
         logs = {}
+        if self.recovery is not None:
+            logs.update(self.recovery.flush())
+            logs.update({"Numerics/" + key: value.clone() for key, value in self.window_maxima.items()})
+            self.window_maxima.clear()
         for index, group in enumerate(self.group_names):
             prefix = "Robustness/" + group + "/"
             logs[prefix + "samples"] = self.counts[index].clone()
             logs[prefix + "arm_acceleration_samples"] = self.value_counts[index, 7].clone()
             for column, name in enumerate(self.metric_names):
                 logs[prefix + name + "_mae"] = means[index, column]
-                if column < 5:
+                if column < 5 or name.endswith("foot_width_m"):
                     logs[prefix + name + "_rmse"] = rms[index, column]
         for index, group in enumerate(("all", "easy", "hard")):
             logs[f"Robustness/{group}/completed"] = self.episodes[index, 0].clone()
@@ -287,6 +504,21 @@ def reset_locomotion_root(env, env_ids):
     yaw = (2 * torch.rand(len(env_ids), device=env.device) - 1) * math.pi
     state[:, 3:7] = quat_from_euler_xyz(rp[:, 0], rp[:, 1], yaw)
     state[:, 7:13] = (2 * torch.rand(len(env_ids), 6, device=env.device) - 1) * 0.1
+    if cfg.nearfall_reset_fraction > 0:
+        selected = runtime.nearfall[env_ids]
+        n = int(selected.sum())
+        principal_axis = torch.randint(2, (n,), device=env.device)
+        direction = torch.where(torch.rand(n, device=env.device) < 0.5, -1.0, 1.0)
+        amplitude = math.radians(cfg.nearfall_reset_min_degrees) + torch.rand(n, device=env.device) * math.radians(
+            cfg.nearfall_reset_max_degrees - cfg.nearfall_reset_min_degrees
+        )
+        near_rp = (torch.rand(n, 2, device=env.device) * 2 - 1) * math.radians(8)
+        near_rp[torch.arange(n, device=env.device), principal_axis] = amplitude * direction
+        state[selected, 3:7] = quat_from_euler_xyz(near_rp[:, 0], near_rp[:, 1], yaw[selected])
+        omega_local = torch.zeros(n, 3, device=env.device)
+        speed = cfg.nearfall_reset_angular_speed * (0.5 + 0.5 * torch.rand(n, device=env.device))
+        omega_local[torch.arange(n, device=env.device), principal_axis] = direction * speed
+        state[selected, 10:13] = quat_apply(yaw_quat(state[selected, 3:7]), omega_local)
     robot.write_root_pose_to_sim(state[:, :7], env_ids=env_ids)
     robot.write_root_velocity_to_sim(state[:, 7:13], env_ids=env_ids)
     runtime.reset(env_ids)
@@ -300,8 +532,10 @@ def reset_locomotion_joints(env, env_ids):
     positions = robot.data.default_joint_pos[env_ids].clone()
     leg_ids, arm_ids = action._joint_ids, runtime.arm_ids
     positions[:, leg_ids] += (2 * torch.rand(len(env_ids), len(leg_ids), device=env.device) - 1) * 0.05
-    arm = positions[:, arm_ids] + (2 * torch.rand(len(env_ids), 6, device=env.device) - 1) * 0.25 * runtime.progress(
-        "arm"
+    arm = positions[:, arm_ids] + (
+        (2 * torch.rand(len(env_ids), 6, device=env.device) - 1)
+        * runtime.cfg.arm_init_joint_noise
+        * runtime.progress("arm")
     )
     positions[:, arm_ids] = arm.clamp(action._arm_controller.lower[env_ids], action._arm_controller.upper[env_ids])
     limits = robot.data.soft_joint_pos_limits[env_ids]
@@ -326,6 +560,20 @@ def push_locomotion(env, env_ids):
 
 def locomotion_diagnostics(env):
     return runtime_for(env).measure_and_check_failure()
+
+
+def recovery_action_rate_l2(env):
+    """Allow faster corrective leg actions as absolute tilt rises from 20 to 50deg."""
+    robot = env.scene["robot"]
+    tilt = (-robot.data.projected_gravity_b[:, 2]).clamp(-1, 1).acos()
+    danger = ((tilt - math.radians(20)) / math.radians(30)).clamp(0, 1)
+    scale = 1 - (1 - env.cfg.robustness.recovery_action_rate_scale) * danger
+    return (env.action_manager.action - env.action_manager.prev_action).square().sum(-1) * scale
+
+
+def recovery_upright_cost(env):
+    """A broad, bounded tilt cost; no positive bonus for inducing a recovery event."""
+    return (1 + env.scene["robot"].data.projected_gravity_b[:, 2]).clamp(0, 2)
 
 
 def bounded_standing_yaw_penalty(env, command_name, sensor_cfg):

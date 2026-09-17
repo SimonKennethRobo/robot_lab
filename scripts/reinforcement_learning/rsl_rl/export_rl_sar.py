@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2024-2026 Ziqi Fan
+# SPDX-License-Identifier: Apache-2.0
+
 """Export the 64D Go2-X5 locomotion actor into an rl_sar policy bundle.
 
 This exporter is intentionally independent of Isaac Sim.  It reconstructs the
@@ -12,11 +15,9 @@ import argparse
 import hashlib
 import json
 import re
-from pathlib import Path
-
 import torch
 import yaml
-
+from pathlib import Path
 
 EXPECTED_LAYOUT = "go2_x5_locomotion_v2_64"
 EXPECTED_TERMS = [
@@ -30,11 +31,7 @@ EXPECTED_TERMS = [
     "arm_joint_pos",
     "arm_joint_vel",
 ]
-EXPECTED_LEG_ORDER = [
-    f"{leg}_{joint}_joint"
-    for leg in ("FR", "FL", "RR", "RL")
-    for joint in ("hip", "thigh", "calf")
-]
+EXPECTED_LEG_ORDER = [f"{leg}_{joint}_joint" for leg in ("FR", "FL", "RR", "RL") for joint in ("hip", "thigh", "calf")]
 EXPECTED_ARM_ORDER = [f"joint{i}" for i in range(1, 7)]
 
 
@@ -140,11 +137,24 @@ def build_actor(state: dict, agent_cfg: dict) -> torch.nn.Sequential:
 def policy_config(config_key: str, metadata: dict) -> dict:
     # Policy order equals Unitree/MuJoCo sensor order: FR, FL, RR, RL, X5.
     default_dof_pos = [
-        -0.1, 0.8, -1.5,
-         0.1, 0.8, -1.5,
-        -0.1, 1.0, -1.5,
-         0.1, 1.0, -1.5,
-         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        -0.1,
+        0.8,
+        -1.5,
+        0.1,
+        0.8,
+        -1.5,
+        -0.1,
+        1.0,
+        -1.5,
+        0.1,
+        1.0,
+        -1.5,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
     ]
     recipe = metadata.get("recipe") or {}
     height_range = [float(value) for value in recipe.get("height_range", (0.28, 0.38))]
@@ -184,8 +194,8 @@ def policy_config(config_key: str, metadata: dict) -> dict:
             "arm_dof_vel_scale": 0.1,
             "base_height_target": base_height_target,
             "action_scale": [0.125, 0.25, 0.25] * 4 + [0.0] * 6,
-            "rl_kp": [25.0] * 18,
-            "rl_kd": [0.5] * 18,
+            "rl_kp": [25.0] * 12 + [50.0, 50.0, 80.0, 30.0, 20.0, 20.0],
+            "rl_kd": [0.5] * 12 + [5.0, 10.0, 10.0, 2.5, 2.0, 1.0],
             "torque_limits": [33.5] * 12 + [20.0] * 6,
             "default_dof_pos": default_dof_pos,
             "joint_mapping": list(range(18)),

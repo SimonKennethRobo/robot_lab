@@ -32,6 +32,10 @@ class DogArmCompositeAction(JointPositionAction):
             settings.arm_max_velocity,
             settings.arm_max_acceleration,
             fixed_mode=settings.arm_mode,
+            reversal_fraction=settings.arm_reversal_fraction,
+            accel_resample_time_s=settings.arm_accel_resample_time_s,
+            zero_accel_probability=settings.arm_zero_accel_probability,
+            zero_velocity_probability=settings.arm_zero_velocity_probability,
         )
         self._arm_targets = default.clone()
         self._arm_controller.reset(torch.arange(env.num_envs, device=env.device), default)

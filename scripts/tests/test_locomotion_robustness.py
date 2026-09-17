@@ -31,6 +31,67 @@ def reward_function(name):
 
 
 class RobustnessTests(unittest.TestCase):
+    def test_recovery_hysteresis_counts_and_no_repeated_timeout(self):
+        tracker = math.RecoveryTracker(2, "cpu", 0.1)
+        age = torch.tensor([1.0, 5.0])
+        bad = torch.tensor([0.7, 0.7])
+        good = torch.tensor([0.0, 0.0])
+        height = torch.tensor([0.33, 0.33])
+        no_failure = torch.tensor([False, False])
+        tracker.update(bad, height, good, age, no_failure)
+        first = tracker.flush()
+        self.assertEqual(first["Recovery/reset/attempts"].item(), 1)
+        self.assertEqual(first["Recovery/rollout/attempts"].item(), 1)
+        for _ in range(3):
+            tracker.update(good, height, good, age, no_failure)
+        second = tracker.flush()
+        self.assertEqual(second["Recovery/reset/recovered"].item(), 1)
+        self.assertEqual(second["Recovery/rollout/recovered"].item(), 1)
+        for _ in range(50):
+            tracker.update(bad, height, good, age, no_failure)
+        third = tracker.flush()
+        self.assertEqual(third["Recovery/reset/attempts"].item(), 1)
+        self.assertEqual(third["Recovery/reset/unresolved"].item(), 1)
+        self.assertFalse(tracker.active.any())
+
+    def test_recovery_partial_reset_censors_and_failure_is_not_success(self):
+        tracker = math.RecoveryTracker(3, "cpu", 0.1)
+        tracker.update(
+            torch.ones(3), torch.full((3,), 0.2), torch.ones(3), torch.ones(3), torch.zeros(3, dtype=torch.bool)
+        )
+        tracker.reset(torch.tensor([0, 1]), torch.tensor([False, True]))
+        self.assertTrue(tracker.active[2])
+        data = tracker.flush()
+        self.assertEqual(data["Recovery/reset/censored"].item(), 1)
+        self.assertEqual(data["Recovery/reset/failed"].item(), 1)
+        self.assertEqual(data["Recovery/reset/active"].item(), 1)
+        tracker.reset(torch.tensor([0, 1]))
+        self.assertEqual(tracker.flush()["Recovery/reset/censored"].item(), 0)
+
+    def test_coherent_arm_reversals_remain_bounded(self):
+        torch.manual_seed(4)
+        arm = math.BoundedArmMotion(
+            torch.full((32, 6), -0.5),
+            torch.full((32, 6), 0.5),
+            0.02,
+            max_velocity=3.5,
+            max_acceleration=16.0,
+            reversal_fraction=1.0,
+        )
+        arm.reset(torch.arange(32), torch.zeros(32, 6))
+        self.assertTrue((arm.mode == 3).all())
+        saw_positive = torch.zeros(32, 6, dtype=torch.bool)
+        saw_negative = torch.zeros_like(saw_positive)
+        for _ in range(500):
+            previous = arm.v.clone()
+            arm.step(1.0)
+            self.assertTrue((arm.q.abs() <= 0.500001).all())
+            self.assertLessEqual(arm.v.abs().max().item(), 3.50001)
+            self.assertLessEqual((arm.v - previous).abs().max().item(), 0.32001)
+            saw_positive |= arm.v > 0.1
+            saw_negative |= arm.v < -0.1
+        self.assertTrue((saw_positive & saw_negative).all())
+
     def reward_env(self):
         sensor = SimpleNamespace(
             data=SimpleNamespace(
@@ -134,6 +195,22 @@ class RobustnessTests(unittest.TestCase):
             torch.testing.assert_close(arm.q[1:], untouched)
             torch.testing.assert_close(arm.q[0], torch.full((6,), 0.15))
             self.assertTrue((arm.v[0] == 0).all())
+
+    def test_wbc_arm_zero_probabilities_are_applied(self):
+        arm = math.BoundedArmMotion(
+            torch.full((8, 6), -1.0),
+            torch.full((8, 6), 1.0),
+            0.02,
+            max_velocity=5.0,
+            max_acceleration=10.0,
+            fixed_mode=0,
+            accel_resample_time_s=0.01,
+            zero_accel_probability=1.0,
+            zero_velocity_probability=1.0,
+        )
+        arm.reset(torch.arange(8), torch.zeros(8, 6))
+        torch.testing.assert_close(arm.step(1.0), torch.zeros(8, 6))
+        torch.testing.assert_close(arm.v, torch.zeros(8, 6))
 
 
 if __name__ == "__main__":

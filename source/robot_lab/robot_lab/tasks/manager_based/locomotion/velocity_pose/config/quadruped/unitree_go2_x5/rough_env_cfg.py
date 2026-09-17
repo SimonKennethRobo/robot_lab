@@ -26,6 +26,7 @@ from robot_lab.tasks.manager_based.locomotion.velocity_pose.velocity_pose_env_cf
 
 DOG_JOINT_NAMES = [f"{leg}_{joint}_joint" for leg in ("FR", "FL", "RR", "RL") for joint in ("hip", "thigh", "calf")]
 ARM_JOINT_NAMES = [f"joint{i}" for i in range(1, 7)]
+ARM_BODY_NAMES = [f"link{i}" for i in range(1, 9)]
 
 
 def leg_entity():
@@ -45,6 +46,9 @@ class GO2X5ObservationsCfg:
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel, scale=2.0, noise=Unoise(n_min=-0.1, n_max=0.1))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
+        # Enabled only for the explicit v3_65 contract in prepare_robustness_cfg.
+        # Keeping the field here fixes its concatenation position at index 9.
+        height_error = None
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity_pose"})
         actions = ObsTerm(func=mdp.last_action)
         joint_pos = ObsTerm(
@@ -124,11 +128,30 @@ class UnitreeGo2X5VelocityPoseRoughEnvCfg(LocomotionVelocityPoseRoughEnvCfg):
             asset_cfg=SceneEntityCfg("robot", body_names="base"), mass_distribution_params=(-1.0, 1.0)
         )
         events.randomize_rigid_body_mass_others.params.update(
-            asset_cfg=SceneEntityCfg("robot", body_names="^(?!base$).*"), mass_distribution_params=(0.85, 1.15)
+            asset_cfg=SceneEntityCfg("robot", body_names="^(?!base$|link[1-8]$).*"),
+            mass_distribution_params=(0.85, 1.15),
+        )
+        events.randomize_arm_link_mass = EventTerm(
+            func=lab_mdp.randomize_rigid_body_mass,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=ARM_BODY_NAMES),
+                "mass_distribution_params": (0.1, 2.0),
+                "operation": "scale",
+                "recompute_inertia": True,
+            },
         )
         events.randomize_com_positions.params.update(
             asset_cfg=SceneEntityCfg("robot", body_names="base"),
             com_range={axis: (-0.02, 0.02) for axis in ("x", "y", "z")},
+        )
+        events.randomize_arm_com_positions = EventTerm(
+            func=lab_mdp.randomize_rigid_body_com,
+            mode="startup",
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=ARM_BODY_NAMES),
+                "com_range": {axis: (-0.1, 0.1) for axis in ("x", "y", "z")},
+            },
         )
         events.randomize_actuator_gains.params.update(
             asset_cfg=leg_entity(), stiffness_distribution_params=(0.8, 1.2), damping_distribution_params=(0.8, 1.2)
@@ -138,8 +161,8 @@ class UnitreeGo2X5VelocityPoseRoughEnvCfg(LocomotionVelocityPoseRoughEnvCfg):
             mode="reset",
             params={
                 "asset_cfg": SceneEntityCfg("robot", joint_names=ARM_JOINT_NAMES),
-                "stiffness_distribution_params": (0.8, 1.2),
-                "damping_distribution_params": (0.7, 1.3),
+                "stiffness_distribution_params": (0.5, 1.5),
+                "damping_distribution_params": (0.2, 2.0),
                 "operation": "scale",
                 "distribution": "uniform",
             },

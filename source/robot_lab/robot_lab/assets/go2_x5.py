@@ -1,7 +1,10 @@
+# Copyright (c) 2024-2026 Ziqi Fan
+# SPDX-License-Identifier: Apache-2.0
+
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg, ImplicitActuatorCfg
+from isaaclab.actuators import DelayedPDActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
-from isaaclab.utils import configclass
+
 from robot_lab.assets import ISAACLAB_ASSETS_DATA_DIR
 
 GO2_X5_CFG = ArticulationCfg(
@@ -56,8 +59,22 @@ GO2_X5_CFG = ArticulationCfg(
             joint_names_expr=["joint[1-6]"],
             effort_limit=20.0,
             velocity_limit=10.0,
-            stiffness=25,
-            damping=0.5,
+            stiffness={
+                "joint1": 50.0,
+                "joint2": 50.0,
+                "joint3": 80.0,
+                "joint4": 30.0,
+                "joint5": 20.0,
+                "joint6": 20.0,
+            },
+            damping={
+                "joint1": 5.0,
+                "joint2": 10.0,
+                "joint3": 10.0,
+                "joint4": 2.5,
+                "joint5": 2.0,
+                "joint6": 1.0,
+            },
             friction=0.01,
             min_delay=0,
             max_delay=5,
