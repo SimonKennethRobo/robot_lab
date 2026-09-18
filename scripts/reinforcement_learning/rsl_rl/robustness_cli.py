@@ -13,6 +13,11 @@ _ROBUSTNESS_FLOAT_FIELDS = (
     "arm_max_acceleration",
     "arm_workspace_fraction",
     "arm_reversal_fraction",
+    "arm_full_extension_fraction",
+    "arm_full_extension_hold_s",
+    "arm_full_extension_max_velocity",
+    "arm_full_extension_max_acceleration",
+    "arm_full_extension_standing_fraction",
     "push_max_xy",
     "push_max_angular",
     "payload_max_kg",
@@ -36,6 +41,8 @@ _ROBUSTNESS_FLOAT_FIELDS = (
     "gait_swing_height_body_target_m",
     "gait_joint_velocity_mirror_cost_weight",
     "gait_contact_sync_reward_weight",
+    "standing_contact_reward_weight",
+    "leg_velocity_balance_cost_weight",
 )
 _INTEGER_LITERAL = re.compile(
     rf"^(?P<prefix>\+{{0,2}}env\.robustness\.(?:{'|'.join(_ROBUSTNESS_FLOAT_FIELDS)}))=" r"(?P<value>[+-]?\d+)$"

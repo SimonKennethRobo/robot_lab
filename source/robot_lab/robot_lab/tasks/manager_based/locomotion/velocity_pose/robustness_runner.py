@@ -9,9 +9,11 @@ import torch.nn.functional as F
 
 from rsl_rl.runners import OnPolicyRunner
 
+from .observation_contract import LAYOUTS, migrate_input_weights
+
 
 class HeightInsertedLinear(torch.nn.Linear):
-    """A 65D linear layer that preserves the original 64D GEMM at zero height error."""
+    """Preserve the no-height GEMM at zero height error for both command layouts."""
 
     def forward(self, input):
         legacy_input = torch.cat((input[..., :9], input[..., 10:]), dim=-1)
@@ -26,7 +28,7 @@ class LocomotionOnPolicyRunner(OnPolicyRunner):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         policy = self.alg.policy
-        if self.env.unwrapped.cfg.robustness.observation_layout == "go2_x5_locomotion_v3_65":
+        if LAYOUTS[self.env.unwrapped.cfg.robustness.observation_layout][1]:
             # Preserve parameter objects already registered in PPO's optimizer.
             policy.actor[0].__class__ = HeightInsertedLinear
             policy.critic[0].__class__ = HeightInsertedLinear
@@ -99,19 +101,7 @@ class LocomotionOnPolicyRunner(OnPolicyRunner):
         metadata = (checkpoint.get("infos") or {}).get("locomotion")
         target_contract = self._contract()
         source_contract = None if metadata is None else metadata.get("contract")
-        migrate_height_error = (
-            source_contract is not None
-            and source_contract.get("layout") == "go2_x5_locomotion_v2_64"
-            and target_contract.get("layout") == "go2_x5_locomotion_v3_65"
-            and source_contract.get("policy_dim") == [64]
-            and source_contract.get("critic_dim") == [64]
-            and target_contract.get("policy_dim") == [65]
-            and target_contract.get("critic_dim") == [65]
-            and source_contract.get("leg_joint_order") == target_contract.get("leg_joint_order")
-            and source_contract.get("arm_joint_order") == target_contract.get("arm_joint_order")
-            and source_contract.get("steps_per_iteration") == target_contract.get("steps_per_iteration")
-        )
-        if metadata is None or (source_contract != target_contract and not migrate_height_error):
+        if metadata is None:
             raise ValueError("Warm-start checkpoint has an incompatible locomotion contract")
         state = dict(checkpoint.get("model_state_dict") or {})
         if not state:
@@ -130,13 +120,7 @@ class LocomotionOnPolicyRunner(OnPolicyRunner):
             floor_applied = not torch.equal(std, floored)
             state["log_std"] = floored.log()
             migrated = True
-        if migrate_height_error:
-            for name in ("actor.0.weight", "critic.0.weight"):
-                old = state[name]
-                new = target[name].new_zeros(target[name].shape)
-                new[:, :9] = old[:, :9]
-                new[:, 10:] = old[:, 9:]
-                state[name] = new
+        state, removed_yaw, migrate_height_error = migrate_input_weights(state, source_contract, target_contract)
         self.alg.policy.load_state_dict(state, strict=True)
         env = self.env.unwrapped
         steps = int(metadata["policy_steps"])
@@ -151,6 +135,7 @@ class LocomotionOnPolicyRunner(OnPolicyRunner):
             "scalar_std_to_log_std": migrated,
             "std_floor_applied": floor_applied,
             "height_error_zero_column_migration": migrate_height_error,
+            "pose_yaw_column_removed": removed_yaw,
             "source_observation_layout": source_contract["layout"],
             "target_observation_layout": target_contract["layout"],
             "optimizer_restored": False,
@@ -164,9 +149,8 @@ class LocomotionOnPolicyRunner(OnPolicyRunner):
         metadata = (checkpoint.get("infos") or {}).get("locomotion")
         if metadata is None or metadata.get("contract") != self._contract():
             raise ValueError(
-                "Incompatible locomotion checkpoint: expected go2_x5_locomotion_v2_64 "
-                "with matching observation/joint order and rollout length. Legacy 84D "
-                "weights require retraining or an explicit migration; they cannot be resumed silently."
+                f"Incompatible locomotion checkpoint: expected {self._contract()}. "
+                "Use --warm_start for a supported input migration; incompatible weights cannot be resumed silently."
             )
         result = super().load(path, load_optimizer=load_optimizer, map_location=map_location)
         env = self.env.unwrapped

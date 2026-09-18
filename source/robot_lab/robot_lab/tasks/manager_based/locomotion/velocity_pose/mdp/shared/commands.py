@@ -54,15 +54,16 @@ class UniformVelocityPoseCommand(velocity_mdp.UniformThresholdVelocityCommand):
         # Create buffers for height and pose commands
         # Height command: (num_envs, 1) - target height for root link
         self.height_command = torch.zeros(self.num_envs, 1, device=self.device)
-        # Pose command: (num_envs, 3) - [roll, pitch, yaw] relative to Point Frame B
-        self.pose_command = torch.zeros(self.num_envs, 3, device=self.device)
+        # GO2-X5 uses [roll, pitch]; the third channel is legacy compatibility.
+        pose_dim = 3 if cfg.include_pose_yaw else 2
+        self.pose_command = torch.zeros(self.num_envs, pose_dim, device=self.device)
         
         # Store default height (will be set in _resample_command based on robot)
         self.default_height = self.cfg.default_height
 
     @property
     def command(self) -> torch.Tensor:
-        """The desired base velocity and pose command. Shape is (num_envs, 7).
+        """Desired [vx, vy, wz, height, roll, pitch], plus yaw only for legacy layouts.
         
         Command structure: [lin_vel_x, lin_vel_y, ang_vel_z, height, roll, pitch, yaw]
         
@@ -81,9 +82,18 @@ class UniformVelocityPoseCommand(velocity_mdp.UniformThresholdVelocityCommand):
         if height_range == (0.0, 0.0):
             height_range = (self.default_height, self.default_height)
         self.height_command[env_ids] = torch.empty(len(env_ids), 1, device=self.device).uniform_(*height_range)
-        for index, name in enumerate(("roll", "pitch", "yaw")):
+        pose_names = ("roll", "pitch", "yaw") if self.cfg.include_pose_yaw else ("roll", "pitch")
+        for index, name in enumerate(pose_names):
             bounds = getattr(self.cfg.ranges, name)
             self.pose_command[env_ids, index] = torch.empty(len(env_ids), device=self.device).uniform_(*bounds)
+
+    def _update_command(self):
+        super()._update_command()
+        standing = getattr(self._env, "_arm_extension_standing", None)
+        if standing is not None:
+            self.vel_command_b[standing] = 0.0
+            self.height_command[standing] = self.default_height
+            self.pose_command[standing] = 0.0
 
     def _update_metrics(self):
         """Use the same yaw-aligned XY and world-Z frames as tracking rewards."""
@@ -106,6 +116,8 @@ class UniformVelocityPoseCommandCfg(velocity_mdp.UniformThresholdVelocityCommand
     """
 
     class_type: type = UniformVelocityPoseCommand
+    # New GO2-X5 layouts disable this; older tasks and explicit legacy layouts keep it.
+    include_pose_yaw: bool = True
     
     # Default height for the robot base (will be overridden per robot)
     default_height: float = 0.35

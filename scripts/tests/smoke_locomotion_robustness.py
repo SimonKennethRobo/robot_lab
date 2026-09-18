@@ -15,6 +15,8 @@ parser.add_argument("--steps", type=int, default=144)
 parser.add_argument("--iteration", type=int, default=8000)
 parser.add_argument("--domain_rand", choices=("none", "benchmark", "sim2real"), default="sim2real")
 parser.add_argument("--ppo_iterations", type=int, default=0)
+parser.add_argument("--observation_layout", default="go2_x5_locomotion_v4_63")
+parser.add_argument("--full_extension_fraction", type=float, default=0.25)
 parser.add_argument("--output", default="outputs/locomotion_smoke")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -29,6 +31,7 @@ from isaaclab_tasks.utils import load_cfg_from_registry, parse_env_cfg
 
 import robot_lab.tasks  # noqa: F401
 from robot_lab.tasks.manager_based.locomotion.velocity_pose.mdp.shared.robustness import push_locomotion, terrain_height
+from robot_lab.tasks.manager_based.locomotion.velocity_pose.observation_contract import LAYOUTS, layout_features
 
 
 def main():
@@ -36,6 +39,8 @@ def main():
     cfg.seed = 42
     cfg.robustness.iteration_override = args.iteration
     cfg.robustness.domain_rand = args.domain_rand
+    cfg.robustness.observation_layout = args.observation_layout
+    cfg.robustness.arm_full_extension_fraction = args.full_extension_fraction
     cfg.log_dir = args.output
     if cfg.scene.terrain.terrain_generator is not None:
         cfg.scene.terrain.terrain_generator.num_rows = 1
@@ -46,8 +51,10 @@ def main():
     env = gym.make(args.task, cfg=cfg).unwrapped
     try:
         obs, _ = env.reset()
-        assert obs["policy"].shape == (args.num_envs, 64), obs["policy"].shape
-        assert obs["critic"].shape == (args.num_envs, 64)
+        width = len(layout_features(args.observation_layout))
+        assert obs["policy"].shape == (args.num_envs, width), obs["policy"].shape
+        assert obs["critic"].shape == (args.num_envs, width)
+        assert env.command_manager.get_command("base_velocity_pose").shape[1] == 6 + LAYOUTS[args.observation_layout][0]
         assert env.action_manager.total_action_dim == 12
         if "Mild" in args.task:
             import numpy as np
@@ -111,7 +118,8 @@ def main():
             "task": args.task,
             "steps": args.steps,
             "num_envs": args.num_envs,
-            "policy_dim": 64,
+            "policy_dim": width,
+            "observation_layout": args.observation_layout,
             "action_dim": 12,
             "hard_envs": int(cohort.sum()),
             "iteration": runtime.iteration,

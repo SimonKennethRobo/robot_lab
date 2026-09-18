@@ -47,7 +47,7 @@ def gravity_wrench(mass: torch.Tensor, offset_w: torch.Tensor, gravity: float = 
 
 
 class BoundedArmMotion:
-    """Three tensorized modes: random acceleration, sinusoidal target, pose hold.
+    """Random, sinusoidal, hold, reversal and forward-extension motion cases.
 
     Targets are integrated with velocity/acceleration limits and anticipatory
     braking at joint limits. Reset starts at the *actual reset joint position*.
@@ -67,6 +67,11 @@ class BoundedArmMotion:
         accel_resample_time_s=0.01,
         zero_accel_probability=0.0,
         zero_velocity_probability=0.0,
+        full_extension_fraction=0.0,
+        full_extension_joint_pos=None,
+        full_extension_hold_s=3.0,
+        full_extension_max_velocity=1.5,
+        full_extension_max_acceleration=3.0,
     ):
         if dt <= 0 or max_velocity <= 0 or max_acceleration <= 0:
             raise ValueError("Arm dt and limits must be positive")
@@ -80,6 +85,12 @@ class BoundedArmMotion:
             raise ValueError("Arm acceleration resample time must be positive")
         if not 0 <= zero_accel_probability <= 1 or not 0 <= zero_velocity_probability <= 1:
             raise ValueError("Arm zero probabilities must be in [0, 1]")
+        if not 0 <= full_extension_fraction <= 1:
+            raise ValueError("Arm full-extension fraction must be in [0, 1]")
+        if any(not math.isfinite(x) or x <= 0 for x in (
+            full_extension_hold_s, full_extension_max_velocity, full_extension_max_acceleration
+        )):
+            raise ValueError("Full-extension hold time and motion limits must be finite and positive")
         self.lower, self.upper = lower, upper
         self.dt, self.max_velocity, self.max_acceleration = dt, max_velocity, max_acceleration
         self.fixed_mode = fixed_mode
@@ -99,6 +110,23 @@ class BoundedArmMotion:
         self.reversal_age = torch.zeros(lower.shape[0], device=lower.device)
         self.reversal_period = torch.ones_like(self.reversal_age)
         self.mode = torch.zeros(lower.shape[0], dtype=torch.long, device=lower.device)
+        self.full_extension_fraction = full_extension_fraction
+        self.extension_target = self.q.clone()
+        if full_extension_fraction > 0:
+            if full_extension_joint_pos is None:
+                raise ValueError("Full-extension cases require a six-joint target")
+            target = torch.as_tensor(full_extension_joint_pos, dtype=lower.dtype, device=lower.device)
+            if target.shape != (lower.shape[1],) or not torch.isfinite(target).all():
+                raise ValueError("Full-extension target must contain one finite angle per arm joint")
+            if ((target < lower) | (target > upper)).any():
+                raise ValueError("Full-extension target exceeds the arm workspace; use arm_workspace_fraction=1")
+            self.extension_target[:] = target
+        self.extension_rest = self.q.clone()
+        self.extension_returning = torch.zeros_like(self.mode, dtype=torch.bool)
+        self.extension_hold_age = torch.zeros_like(self.reversal_age)
+        self.extension_hold_s = full_extension_hold_s
+        self.extension_max_velocity = min(max_velocity, full_extension_max_velocity)
+        self.extension_max_acceleration = min(max_acceleration, full_extension_max_acceleration)
 
     def reset(self, env_ids, joint_pos):
         self.q[env_ids] = joint_pos.clamp(self.lower[env_ids], self.upper[env_ids])
@@ -111,6 +139,12 @@ class BoundedArmMotion:
         elif self.reversal_fraction > 0:
             # Reserve a cohort for coherent, multi-axis target reversals.
             self.mode[env_ids] = torch.where(u < self.reversal_fraction, 3, self.mode[env_ids])
+        if self.full_extension_fraction > 0:
+            selected = torch.rand(len(env_ids), device=self.q.device) < self.full_extension_fraction
+            self.mode[env_ids] = torch.where(selected, 4, self.mode[env_ids])
+        self.extension_rest[env_ids] = self.q[env_ids]
+        self.extension_returning[env_ids] = False
+        self.extension_hold_age[env_ids] = 0.0
         lower, upper = self.lower[env_ids], self.upper[env_ids]
         radius = (upper - lower) * 0.5
         self.center[env_ids] = (upper + lower) * 0.5
@@ -122,11 +156,13 @@ class BoundedArmMotion:
             self.reversal_age[env_ids] = 0
             self.reversal_period[env_ids] = 0.6 + 0.6 * torch.rand(len(env_ids), device=self.q.device)
 
-    def step(self, intensity: float):
+    def step(self, intensity: float, actual_joint_pos=None):
         intensity = min(1.0, max(0.0, intensity))
         self.step_count += 1
+        extension = self.mode == 4
         # Acceleration remains available for braking if the curriculum is reduced.
-        a_dt = self.max_acceleration * self.dt
+        acceleration = torch.where(extension[:, None], self.extension_max_acceleration, self.max_acceleration)
+        a_dt = acceleration * self.dt
         self.phase.add_(2 * math.pi * self.frequency * self.dt * intensity)
         if self.step_count % self.accel_resample_steps == 0:
             self.random_accel = (2 * torch.rand_like(self.v) - 1) * self.max_acceleration * intensity
@@ -144,14 +180,27 @@ class BoundedArmMotion:
             axis_sign = torch.where(torch.sin(self.phase) >= 0, 1.0, -1.0)
             reversal = self.center + direction[:, None] * axis_sign * self.amplitude
             target = torch.where((self.mode == 3)[:, None], reversal, target)
+        extension_goal = self.extension_rest + intensity * (self.extension_target - self.extension_rest)
+        extension_goal = torch.where(self.extension_returning[:, None], self.extension_rest, extension_goal)
+        target = torch.where(extension[:, None], extension_goal, target)
+        # Count a hold only after the target AND measured arm have arrived.
+        arrived = ((self.q - extension_goal).abs().amax(-1) < 0.02) & (self.v.abs().amax(-1) < 0.05)
+        if actual_joint_pos is not None:
+            arrived &= (actual_joint_pos - extension_goal).abs().amax(-1) < 0.15
+        holding = extension & arrived & (intensity > 0)
+        self.extension_hold_age = torch.where(holding, self.extension_hold_age + self.dt, 0.0)
+        switch = extension & (self.extension_hold_age >= self.extension_hold_s - 1e-6)
+        self.extension_returning ^= switch
+        self.extension_hold_age[switch] = 0.0
         desired = torch.where((self.mode == 0)[:, None], random_v, 6.0 * (target - self.q))
-        v_max = self.max_velocity * intensity
+        v_max = torch.where(extension[:, None], self.extension_max_velocity, self.max_velocity) * intensity
         desired = desired.clamp(-v_max, v_max)
         stop = None
         if self.zero_velocity_probability > 0:
             stop = torch.rand(self.v.shape[0], 1, device=self.v.device) < self.zero_velocity_probability
-        positive = torch.sqrt(a_dt**2 + 2 * self.max_acceleration * (self.upper - self.q).clamp_min(0)) - a_dt
-        negative = torch.sqrt(a_dt**2 + 2 * self.max_acceleration * (self.q - self.lower).clamp_min(0)) - a_dt
+            stop &= ~extension[:, None]
+        positive = torch.sqrt(a_dt**2 + 2 * acceleration * (self.upper - self.q).clamp_min(0)) - a_dt
+        negative = torch.sqrt(a_dt**2 + 2 * acceleration * (self.q - self.lower).clamp_min(0)) - a_dt
         desired = torch.minimum(torch.maximum(desired, -negative), positive)
         self.v.add_((desired - self.v).clamp(-a_dt, a_dt))
         if stop is not None:

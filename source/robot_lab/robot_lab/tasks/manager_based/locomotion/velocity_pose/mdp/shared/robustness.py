@@ -26,13 +26,16 @@ from .robustness_math import RecoveryTracker, contact_slip, fixed_hard_mask, gra
 def prepare_robustness_cfg(cfg):  # noqa: C901
     """Apply DR mode after CLI overrides, before assets/actuators are created."""
     from ...recovery_recipes import apply_recovery_recipe
+    from ...observation_contract import LAYOUTS
 
     settings = cfg.robustness
     apply_recovery_recipe(settings)
-    layouts = ("go2_x5_locomotion_v2_64", "go2_x5_locomotion_v3_65")
+    layouts = tuple(LAYOUTS)
     if settings.observation_layout not in layouts:
         raise ValueError(f"robustness.observation_layout must be one of {layouts}")
-    if settings.observation_layout == "go2_x5_locomotion_v3_65":
+    include_yaw, include_height = LAYOUTS[settings.observation_layout]
+    cfg.commands.base_velocity_pose.include_pose_yaw = include_yaw
+    if include_height:
         term = ObsTerm(func=terrain_relative_height_error, clip=(-0.2, 0.2))
         cfg.observations.policy.height_error = term
         cfg.observations.critic.height_error = ObsTerm(func=terrain_relative_height_error, clip=(-0.2, 0.2))
@@ -53,6 +56,8 @@ def prepare_robustness_cfg(cfg):  # noqa: C901
         raise ValueError("arm zero probabilities must be in [0, 1]")
     if settings.arm_init_joint_noise < 0:
         raise ValueError("arm_init_joint_noise must be nonnegative")
+    if not 0 <= settings.arm_full_extension_standing_fraction <= 1:
+        raise ValueError("arm_full_extension_standing_fraction must be in [0, 1]")
     if not 0 <= settings.nearfall_reset_fraction <= settings.hard_fraction:
         raise ValueError("Near-fall resets must be a subset of the hard cohort")
     if (
@@ -83,6 +88,8 @@ def prepare_robustness_cfg(cfg):  # noqa: C901
         settings.gait_swing_height_cost_weight,
         settings.gait_joint_velocity_mirror_cost_weight,
         settings.gait_contact_sync_reward_weight,
+        settings.standing_contact_reward_weight,
+        settings.leg_velocity_balance_cost_weight,
     )
     if any(weight < 0 for weight in gait_weights):
         raise ValueError("Gait symmetry cost/reward weights must be nonnegative")
@@ -117,6 +124,32 @@ def prepare_robustness_cfg(cfg):  # noqa: C901
             },
         )
     foot_names = [f"{leg}_foot" for leg in ("FL", "FR", "RL", "RR")]
+    if settings.standing_contact_reward_weight > 0:
+        cfg.rewards.standing_all_feet_contact = RewTerm(
+            func=standing_all_feet_contact_reward,
+            weight=settings.standing_contact_reward_weight,
+            params={
+                "command_name": "base_velocity_pose",
+                "sensor_cfg": SceneEntityCfg("contact_forces", body_names=foot_names, preserve_order=True),
+            },
+        )
+    if settings.leg_velocity_balance_cost_weight > 0:
+        cfg.rewards.leg_velocity_balance = RewTerm(
+            func=leg_velocity_balance_cost,
+            weight=-settings.leg_velocity_balance_cost_weight,
+            params={
+                "command_name": "base_velocity_pose",
+                "asset_cfg": SceneEntityCfg(
+                    "robot",
+                    joint_names=[
+                        f"{leg}_{joint}_joint"
+                        for leg in ("FL", "FR", "RL", "RR")
+                        for joint in ("hip", "thigh", "calf")
+                    ],
+                    preserve_order=True,
+                ),
+            },
+        )
     if settings.gait_timing_variance_cost_weight > 0:
         cfg.rewards.feet_air_time_variance = RewTerm(
             func=feet_air_time_variance_penalty,
@@ -164,7 +197,9 @@ def prepare_robustness_cfg(cfg):  # noqa: C901
             setattr(cfg.events, name, None)
 
 
-def diagonal_leg_joint_velocity_mirror_cost(env, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]]):
+def diagonal_leg_joint_velocity_mirror_cost(
+    env, asset_cfg: SceneEntityCfg, mirror_joints: list[list[str]], command_name: str = "base_velocity_pose"
+):
     """Penalize unequal speed magnitudes within the two diagonal trot pairs.
 
     Unlike the generic action-mirror term, this indexes the articulation's joint
@@ -185,8 +220,39 @@ def diagonal_leg_joint_velocity_mirror_cost(env, asset_cfg: SceneEntityCfg, mirr
         second_speed = torch.abs(asset.data.joint_vel[:, second_ids])
         cost += torch.mean(torch.square(first_speed - second_speed), dim=-1)
     cost /= max(len(mirror_joints), 1)
+    # Compare only the in-phase diagonal partners, not swing versus stance legs.
+    # Do not constrain load-compensating leg motions while standing with the arm out.
+    cost *= env.command_manager.get_command(command_name)[:, :3].norm(dim=-1) > 0.1
     cost *= torch.clamp(-asset.data.projected_gravity_b[:, 2], 0, 0.7) / 0.7
     return cost
+
+
+def standing_all_feet_contact_reward(env, command_name: str, sensor_cfg: SceneEntityCfg):
+    """Strong preference for four-foot support, without prescribing equal loads.
+
+    Cubing the contact fraction gives 1 for four feet and 0.422 for three.
+    Current forces (not contact history) prevent brief taps earning full support.
+    Height/tilt commands remain allowed; only locomotion commands gate standing.
+    """
+    command = env.command_manager.get_command(command_name)
+    sensor = env.scene[sensor_cfg.name]
+    contact = sensor.data.net_forces_w[:, sensor_cfg.body_ids].norm(dim=-1) > 1.0
+    standing = command[:, :3].norm(dim=-1) < 0.1
+    upright = torch.clamp(-env.scene["robot"].data.projected_gravity_b[:, 2], 0.0, 0.7) / 0.7
+    return contact.float().mean(dim=-1).pow(3) * standing * upright
+
+
+def leg_velocity_balance_cost(env, command_name: str, asset_cfg: SceneEntityCfg):
+    """Penalize one leg running faster than the median leg during translation."""
+    asset = env.scene[asset_cfg.name]
+    velocities = asset.data.joint_vel[:, asset_cfg.joint_ids].reshape(env.num_envs, 4, 3)
+    speed = velocities.square().mean(-1).sqrt()
+    median = speed.median(dim=-1, keepdim=True).values
+    imbalance = torch.tanh((speed - median).abs()).square().mean(-1)
+    command = env.command_manager.get_command(command_name)
+    moving = command[:, :2].norm(dim=-1) > 0.1
+    upright = torch.clamp(-asset.data.projected_gravity_b[:, 2], 0.0, 0.7) / 0.7
+    return imbalance * moving * upright
 
 
 def terrain_height(env):
@@ -233,6 +299,14 @@ class LocomotionRuntime:
         "air_time_fr_s",
         "air_time_rl_s",
         "air_time_rr_s",
+        "arm_full_extension_case",
+        "arm_full_extension_at_target",
+        "standing_four_feet_contact_fraction",
+        "standing_contact_count",
+        "joint_speed_fl_radps",
+        "joint_speed_fr_radps",
+        "joint_speed_rl_radps",
+        "joint_speed_rr_radps",
     )
     group_names = tuple(f"{cohort}/{age}" for cohort in ("all", "easy", "hard") for age in ("all", "early", "late"))
 
@@ -246,6 +320,10 @@ class LocomotionRuntime:
         self.recovery = RecoveryTracker(env.num_envs, env.device, env.step_dt) if self.cfg.recovery_metrics else None
         self.window_maxima = {}
         self.arm_ids = self.robot.find_joints([f"joint{i}" for i in range(1, 7)], preserve_order=True)[0]
+        self.leg_ids = self.robot.find_joints(
+            [f"{leg}_{joint}_joint" for leg in ("FL", "FR", "RL", "RR") for joint in ("hip", "thigh", "calf")],
+            preserve_order=True,
+        )[0]
         feet = [f"{leg}_foot" for leg in ("FL", "FR", "RL", "RR")]
         self.feet_ids = self.robot.find_bodies(feet, preserve_order=True)[0]
         self.contact_ids = env.scene["contact_forces"].find_bodies(feet, preserve_order=True)[0]
@@ -388,7 +466,18 @@ class LocomotionRuntime:
             ),
             dim=-1,
         )
-        errors = torch.cat((errors, swing_height, swing_speed, air_time), dim=-1)
+        arm_controller = env.action_manager.get_term("joint_pos")._arm_controller
+        extension_case = arm_controller.mode == 4
+        extension_reached = extension_case & (
+            (data.joint_pos[:, self.arm_ids] - arm_controller.extension_target).abs().amax(-1) < 0.15
+        )
+        errors = torch.cat((errors, swing_height, swing_speed, air_time,
+                            extension_case[:, None].float(), extension_reached[:, None].float()), dim=-1)
+        standing = cmd[:, :3].norm(dim=-1) < 0.1
+        current_contact = sensor.data.net_forces_w[:, self.contact_ids].norm(dim=-1) > 1.0
+        leg_speed = data.joint_vel[:, self.leg_ids].reshape(env.num_envs, 4, 3).square().mean(-1).sqrt()
+        errors = torch.cat((errors, current_contact.all(-1, keepdim=True).float(),
+                            current_contact.sum(-1, keepdim=True).float(), leg_speed), dim=-1)
         self.age += env.step_dt
         cohorts = torch.stack((torch.ones_like(self.hard), ~self.hard, self.hard))
         ages = torch.stack((torch.ones_like(self.hard), self.age <= 2.0, self.age > 2.0))
@@ -399,6 +488,12 @@ class LocomotionRuntime:
         sample_valid = torch.ones_like(errors)
         sample_valid[:, 7] = self.velocity_valid.float()
         sample_valid[:, 14:26] = swing.repeat(1, 3)
+        sample_valid[:, 26:28] = extension_case[:, None]
+        sample_valid[:, 28:30] = standing[:, None]
+        sample_valid[:, 30:34] = (~standing)[:, None]
+        # Numerators and denominators must use the same conditional samples.
+        self.sums -= masks @ (errors.abs() * (1 - sample_valid))
+        self.squares -= masks @ (errors.square() * (1 - sample_valid))
         self.value_counts += masks @ sample_valid
         self.previous_arm_velocity.copy_(arm_v)
         self.velocity_valid[:] = True

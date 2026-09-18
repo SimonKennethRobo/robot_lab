@@ -1,7 +1,7 @@
 # Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
-"""Frozen first recovery screen for the deployed 64D policy, without payload.
+"""Recovery screens using the configured observation layout, without payload.
 
 Each named recipe owns the fields below; use 'none' for manual overrides.
 Arm speed/acceleration are simulation stress settings, not hardware limits.
@@ -31,7 +31,6 @@ def apply_recovery_recipe(settings):
     if name not in RECIPES:
         raise ValueError(f"Unknown recovery recipe: {name}")
     common = {
-        "observation_layout": "go2_x5_locomotion_v2_64",
         "domain_rand": "sim2real",
         "iteration_override": 8000,
         "recovery_metrics": True,

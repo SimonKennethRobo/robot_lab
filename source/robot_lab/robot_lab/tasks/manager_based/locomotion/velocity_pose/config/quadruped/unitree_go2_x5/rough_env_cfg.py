@@ -37,16 +37,16 @@ def leg_entity():
 class GO2X5ObservationsCfg:
     @configclass
     class PolicyCfg(ObsGroup):
-        """64D proprioception; leg observations/actions use FR, FL, RR, RL order.
+        """63D proprioception; leg observations/actions use FR, FL, RR, RL order.
 
-        Contract v2: 3+3+3+7+12+12+12+6+6. Old 84D checkpoints are incompatible.
+        Contract v4: 3+3+3+6+12+12+12+6+6. Legacy layouts are explicit opt-ins.
         No placeholder, world-position or assumed-COM inputs.
         """
 
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel, scale=2.0, noise=Unoise(n_min=-0.1, n_max=0.1))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, scale=0.25, noise=Unoise(n_min=-0.2, n_max=0.2))
         projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=Unoise(n_min=-0.05, n_max=0.05))
-        # Enabled only for the explicit v3_65 contract in prepare_robustness_cfg.
+        # Enabled for explicit height-error contracts in prepare_robustness_cfg.
         # Keeping the field here fixes its concatenation position at index 9.
         height_error = None
         velocity_commands = ObsTerm(func=mdp.generated_commands, params={"command_name": "base_velocity_pose"})
@@ -97,6 +97,7 @@ class UnitreeGo2X5VelocityPoseRoughEnvCfg(LocomotionVelocityPoseRoughEnvCfg):
         self.scene.height_scanner = None
         self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/base"
         command = self.commands.base_velocity_pose
+        command.include_pose_yaw = False
         command.debug_vis = False
         command.default_height = 0.33
         command.ranges.height = (0.33, 0.33)

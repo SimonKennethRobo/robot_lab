@@ -8,7 +8,7 @@ from isaaclab.utils import configclass
 
 @configclass
 class RobustnessCfg:
-    observation_layout: str = "go2_x5_locomotion_v2_64"
+    observation_layout: str = "go2_x5_locomotion_v4_63"
     domain_rand: str = "sim2real"  # none / benchmark / sim2real
     steps_per_iteration: int = 24
     iteration_override: int = -1  # fixed evaluation level; -1 follows training clock
@@ -29,6 +29,14 @@ class RobustnessCfg:
     arm_init_joint_noise: float = 1.0
     arm_mode: int = 0  # WBC stage-1 fallback uses random acceleration; structured / hold = 1 / 2
     arm_reversal_fraction: float = 0.0  # optional fourth mode in the mixed generator
+    # Episode fraction with reach -> hold -> retract -> hold, independent of arm_mode.
+    arm_full_extension_fraction: float = 0.25
+    arm_full_extension_hold_s: float = 3.0
+    arm_full_extension_max_velocity: float = 1.5
+    arm_full_extension_max_acceleration: float = 3.0
+    arm_full_extension_standing_fraction: float = 0.5
+    # Joint1..6: forward straight pose, including the URDF elbow link offset.
+    arm_full_extension_joint_pos: tuple[float, ...] = (0.0, 3.14159, 2.91688, 0.22471, 0.0, 0.0)
     push_start: int = 1000
     push_end: int = 8000
     push_max_xy: float = 0.6
@@ -61,6 +69,9 @@ class RobustnessCfg:
     gait_timing_variance_cost_weight: float = 0.0
     gait_swing_height_cost_weight: float = 0.0
     gait_swing_height_body_target_m: float = -0.27
-    gait_joint_velocity_mirror_cost_weight: float = 0.0
+    gait_joint_velocity_mirror_cost_weight: float = 0.04
     gait_contact_sync_reward_weight: float = 0.5
+    # Explicit stabilizers for the two observed hardware failure modes.
+    standing_contact_reward_weight: float = 2.0
+    leg_velocity_balance_cost_weight: float = 0.08
     metrics_interval: int = 24

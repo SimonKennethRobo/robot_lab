@@ -21,7 +21,7 @@ class UnitreeGo2X5VelocityPoseRoughPPORunnerCfg(UnitreeGo2VelocityPoseRoughPPORu
         self.experiment_name = "unitree_go2_x5_velocity_pose_rough"
         self.logger = "wandb"
 
-        # 64D proprioception -> 512 -> 256 -> 128 -> 12 leg actions.
+        # 63D proprioception -> 512 -> 256 -> 128 -> 12 leg actions.
         self.policy.class_name = "ActorCritic"
 
         # Initial budget: 8k curriculum + 12k at full intensity. Extend from

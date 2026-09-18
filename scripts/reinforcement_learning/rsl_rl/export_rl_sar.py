@@ -2,7 +2,7 @@
 # Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
-"""Export the 64D Go2-X5 locomotion actor into an rl_sar policy bundle.
+"""Export 63D (or legacy 64D) Go2-X5 locomotion actors into rl_sar bundles.
 
 This exporter is intentionally independent of Isaac Sim.  It reconstructs the
 RSL-RL MLP from the checkpoint actor tensors, validates the saved locomotion
@@ -19,7 +19,10 @@ import torch
 import yaml
 from pathlib import Path
 
-EXPECTED_LAYOUT = "go2_x5_locomotion_v2_64"
+EXPORT_LAYOUTS = {
+    "go2_x5_locomotion_v2_64": (64, "robot_lab/velocity_pose_commands"),
+    "go2_x5_locomotion_v4_63": (63, "robot_lab/velocity_pose_commands_6d"),
+}
 EXPECTED_TERMS = [
     "base_lin_vel",
     "base_ang_vel",
@@ -70,10 +73,12 @@ def load_and_validate_checkpoint(path: Path) -> tuple[dict, dict]:
     if not isinstance(metadata, dict):
         raise ValueError("checkpoint has no infos.locomotion metadata")
     contract = metadata.get("contract") or {}
+    if contract.get("layout") not in EXPORT_LAYOUTS:
+        raise ValueError("Unsupported export layout; height-error layouts need a deployment height observation")
+    input_dim, _ = EXPORT_LAYOUTS[contract["layout"]]
     expected = {
-        "layout": EXPECTED_LAYOUT,
         "policy_terms": EXPECTED_TERMS,
-        "policy_dim": [64],
+        "policy_dim": [input_dim],
         "leg_joint_order": EXPECTED_LEG_ORDER,
         "arm_joint_order": EXPECTED_ARM_ORDER,
     }
@@ -100,7 +105,7 @@ def activation(name: str) -> torch.nn.Module:
         raise ValueError(f"unsupported actor activation: {name}") from error
 
 
-def build_actor(state: dict, agent_cfg: dict) -> torch.nn.Sequential:
+def build_actor(state: dict, agent_cfg: dict, input_dim: int = 63) -> torch.nn.Sequential:
     policy_cfg = agent_cfg.get("policy") or {}
     if policy_cfg.get("actor_obs_normalization", False):
         raise ValueError("actor observation normalization is not supported by this exporter")
@@ -110,9 +115,9 @@ def build_actor(state: dict, agent_cfg: dict) -> torch.nn.Sequential:
         if match:
             actor_weights.append((int(match.group(1)), tensor))
     actor_weights.sort()
-    if not actor_weights or actor_weights[0][1].shape[1] != 64 or actor_weights[-1][1].shape[0] != 12:
+    if not actor_weights or actor_weights[0][1].shape[1] != input_dim or actor_weights[-1][1].shape[0] != 12:
         shapes = [tuple(tensor.shape) for _, tensor in actor_weights]
-        raise ValueError(f"expected a 64D -> 12D actor, found layers {shapes}")
+        raise ValueError(f"expected a {input_dim}D -> 12D actor, found layers {shapes}")
 
     modules: list[torch.nn.Module] = []
     activation_name = str(policy_cfg.get("activation", "elu"))
@@ -128,13 +133,14 @@ def build_actor(state: dict, agent_cfg: dict) -> torch.nn.Sequential:
             modules.append(activation(activation_name))
     actor = torch.nn.Sequential(*modules).eval()
     with torch.inference_mode():
-        probe = actor(torch.zeros(1, 64))
+        probe = actor(torch.zeros(1, input_dim))
     if probe.shape != (1, 12) or not torch.isfinite(probe).all():
         raise ValueError(f"invalid exported actor probe: shape={tuple(probe.shape)}")
     return actor
 
 
 def policy_config(config_key: str, metadata: dict) -> dict:
+    input_dim, command_term = EXPORT_LAYOUTS[metadata["contract"]["layout"]]
     # Policy order equals Unitree/MuJoCo sensor order: FR, FL, RR, RL, X5.
     default_dof_pos = [
         -0.1,
@@ -164,12 +170,12 @@ def policy_config(config_key: str, metadata: dict) -> dict:
     return {
         config_key: {
             "model_name": "policy.pt",
-            "num_observations": 64,
+            "num_observations": input_dim,
             "observations": [
                 "lin_vel",
                 "ang_vel",
                 "gravity_vec",
-                "robot_lab/velocity_pose_commands",
+                command_term,
                 "roboduet/leg_actions",
                 "roboduet/leg_dof_pos",
                 "roboduet/leg_dof_vel",
@@ -211,6 +217,15 @@ def policy_config(config_key: str, metadata: dict) -> dict:
     }
 
 
+def validate_runtime(rl_sar_root: Path, metadata: dict) -> None:
+    """Fail before export if the target SDK cannot assemble the six-wide command."""
+    _, term = EXPORT_LAYOUTS[metadata["contract"]["layout"]]
+    if term.endswith("_6d"):
+        sdk = rl_sar_root / "library/core/rl_sdk/rl_sdk.cpp"
+        if not sdk.is_file() or term not in sdk.read_text():
+            raise ValueError(f"Update/rebuild rl_sar with {term} support before exporting to {rl_sar_root}")
+
+
 def set_default(base_yaml: Path, config_name: str) -> None:
     text = base_yaml.read_text()
     updated, replacements = re.subn(
@@ -231,9 +246,11 @@ def main() -> None:
     agent_path = (args.agent_config or checkpoint_path.parent / "params" / "agent.yaml").resolve()
     checkpoint, state = load_and_validate_checkpoint(checkpoint_path)
     metadata = checkpoint["infos"]["locomotion"]
+    input_dim, _ = EXPORT_LAYOUTS[metadata["contract"]["layout"]]
+    validate_runtime(rl_sar_root, metadata)
     with agent_path.open() as stream:
         agent_cfg = yaml.safe_load(stream)
-    actor = build_actor(state, agent_cfg)
+    actor = build_actor(state, agent_cfg, input_dim)
 
     config_key = f"go2_x5/{args.config_name}"
     output_dir = rl_sar_root / "policy" / "go2_x5" / args.config_name
@@ -246,7 +263,7 @@ def main() -> None:
 
     with torch.inference_mode():
         torch.manual_seed(20260914)
-        probes = torch.randn(64, 64)
+        probes = torch.randn(64, input_dim)
         max_error = float((actor(probes) - torch.jit.load(str(output_dir / "policy.pt"))(probes)).abs().max())
     if max_error != 0.0:
         raise ValueError(f"TorchScript replay mismatch: max_abs_error={max_error}")
@@ -256,8 +273,8 @@ def main() -> None:
         "source_checkpoint": str(checkpoint_path),
         "source_checkpoint_sha256": sha256(checkpoint_path),
         "source_iteration": int(checkpoint.get("iter", -1)),
-        "contract": EXPECTED_LAYOUT,
-        "actor_input_dim": 64,
+        "contract": metadata["contract"]["layout"],
+        "actor_input_dim": input_dim,
         "actor_output_dim": 12,
         "policy_joint_order": EXPECTED_LEG_ORDER,
         "arm_joint_order": EXPECTED_ARM_ORDER,
