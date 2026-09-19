@@ -221,8 +221,12 @@ def validate_runtime(rl_sar_root: Path, metadata: dict) -> None:
     """Fail before export if the target SDK cannot assemble the six-wide command."""
     _, term = EXPORT_LAYOUTS[metadata["contract"]["layout"]]
     if term.endswith("_6d"):
-        sdk = rl_sar_root / "library/core/rl_sdk/rl_sdk.cpp"
-        if not sdk.is_file() or term not in sdk.read_text():
+        sdk_candidates = (
+            rl_sar_root / "library/core/rl_sdk/rl_sdk.cpp",
+            rl_sar_root / "src/rl_sar/library/core/rl_sdk/rl_sdk.cpp",
+        )
+        sdk = next((path for path in sdk_candidates if path.is_file()), None)
+        if sdk is None or term not in sdk.read_text():
             raise ValueError(f"Update/rebuild rl_sar with {term} support before exporting to {rl_sar_root}")
 
 

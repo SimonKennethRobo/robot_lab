@@ -11,7 +11,10 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import re
+import subprocess
 import sys
+import tempfile
 
 from isaaclab.app import AppLauncher
 
@@ -47,6 +50,18 @@ parser.add_argument(
 )
 parser.add_argument("--domain_rand", choices=["none", "benchmark", "sim2real"], default="benchmark")
 parser.add_argument("--arm_mode", choices=["random", "structured", "hold"], default=None)
+parser.add_argument(
+    "--export_rl_sar", "--export-rl-sar", dest="export_rl_sar", action=argparse.BooleanOptionalAction, default=True,
+    help="Export the loaded policy to an rl_sar bundle after loading (default: enabled).",
+)
+parser.add_argument(
+    "--rl_sar_root", "--rl-sar-root", dest="rl_sar_root", default=None,
+    help="rl_sar repository root; defaults to the sibling Locomotion/rl_sar directory.",
+)
+parser.add_argument(
+    "--rl_sar_config_name", "--rl-sar-config-name", dest="rl_sar_config_name", default=None,
+    help="Output policy config name; defaults to a name derived from the checkpoint run.",
+)
 parser.add_argument("--debug_vis", action="store_true", help="Show pose markers for at most 8 environments.")
 parser.add_argument(
     "--max_steps", type=int, default=0, help="Stop after this many playback steps; 0 runs continuously."
@@ -132,6 +147,47 @@ import robot_lab.tasks  # noqa: F401  # isort: skip
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from rl_utils import camera_follow
+
+def _default_rl_sar_config_name(resume_path):
+    run_name = Path(resume_path).parent.name
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_name).strip("_.-") or "checkpoint"
+    return f"robot_lab_{safe_name}"
+
+
+def _export_rl_sar(resume_path, agent_cfg):
+    """Export the loaded Go2-X5 policy to the sibling rl_sar checkout."""
+    import yaml
+
+    rl_sar_root = (
+        Path(args_cli.rl_sar_root).expanduser().resolve()
+        if args_cli.rl_sar_root
+        else Path(__file__).resolve().parents[4] / "rl_sar"
+    )
+    if not rl_sar_root.is_dir():
+        raise FileNotFoundError(
+            f"rl_sar repository not found at {rl_sar_root}; pass --rl_sar_root or use --no-export_rl_sar"
+        )
+    config_name = args_cli.rl_sar_config_name or _default_rl_sar_config_name(resume_path)
+    exporter = Path(__file__).resolve().with_name("export_rl_sar.py")
+    agent_dict = agent_cfg.to_dict() if hasattr(agent_cfg, "to_dict") else agent_cfg
+    with tempfile.TemporaryDirectory(prefix="robot_lab_rl_sar_") as temp_dir:
+        agent_path = Path(temp_dir) / "agent.yaml"
+        agent_path.write_text(yaml.safe_dump(agent_dict, sort_keys=False))
+        command = [
+            sys.executable,
+            str(exporter),
+            "--checkpoint",
+            str(Path(resume_path).resolve()),
+            "--rl-sar-root",
+            str(rl_sar_root),
+            "--config-name",
+            config_name,
+            "--agent-config",
+            str(agent_path),
+        ]
+        subprocess.run(command, check=True)
+    print(f"[INFO] rl_sar export: {rl_sar_root / 'policy' / 'go2_x5' / config_name}")
+
 
 # PLACEHOLDER: Extension template (do not remove this comment)
 
@@ -342,7 +398,13 @@ def main(  # noqa: C901
     else:
         normalizer = None
 
-    # export policy to onnx/jit
+    if args_cli.export_rl_sar and args_cli.task and "Go2-X5" in args_cli.task:
+        try:
+            _export_rl_sar(resume_path, agent_cfg)
+        except Exception as error:
+            print(f"[WARNING] rl_sar export skipped: {error}")
+
+    # Export the policy to JIT and ONNX for simulator-side playback.
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
     export_policy_as_jit(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.pt")
     export_policy_as_onnx(policy_nn, normalizer=normalizer, path=export_model_dir, filename="policy.onnx")
