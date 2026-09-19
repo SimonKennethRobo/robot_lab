@@ -244,14 +244,19 @@ def standing_all_feet_contact_reward(env, command_name: str, sensor_cfg: SceneEn
 
 
 def leg_velocity_balance_cost(env, command_name: str, asset_cfg: SceneEntityCfg):
-    """Penalize one leg running faster than the median leg during translation."""
+    """Penalize one leg running faster than the median leg while locomoting.
+
+    Include yaw in the motion gate. The previous ``command[:, :2]`` gate made
+    the stabilizer disappear for in-place rotations, exactly where an
+    unbalanced swing leg is most likely to emerge.
+    """
     asset = env.scene[asset_cfg.name]
     velocities = asset.data.joint_vel[:, asset_cfg.joint_ids].reshape(env.num_envs, 4, 3)
     speed = velocities.square().mean(-1).sqrt()
     median = speed.median(dim=-1, keepdim=True).values
     imbalance = torch.tanh((speed - median).abs()).square().mean(-1)
     command = env.command_manager.get_command(command_name)
-    moving = command[:, :2].norm(dim=-1) > 0.1
+    moving = command[:, :3].norm(dim=-1) > 0.1
     upright = torch.clamp(-asset.data.projected_gravity_b[:, 2], 0.0, 0.7) / 0.7
     return imbalance * moving * upright
 
