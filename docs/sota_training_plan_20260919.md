@@ -25,16 +25,19 @@ The gait branch is a controlled exploration because the earlier timing and heigh
 
 ## Active placement
 
-| run | device | envs | log location | status at submission |
+The original TensorBoard-only launch was stopped on 2026-09-19 and restarted with WandB online under project `robotlab`. The active E4A tag is `sota_20260919_e4a_wandb`; the E4 fallback tag is `sota_20260919_e4_fallback_wandb`. The current effective run names and links are recorded in [next_optimization_handoff_20260919.md](next_optimization_handoff_20260919.md).
+
+
+| run | device | envs | log location | status at restart |
 |---|---|---:|---|---|
-| main-s42 | E4A RTX 5090 | 4096 | `robot_lab_sota_20260919/cluster_runs/sota_20260919_e4a/logs/sota_20260919_e4a_main_s42.log` | PPO running |
-| main-s73 | E4A RTX 4080S-0 | 2048 | same E4A log directory | PPO running |
-| contact-s42 | E4A RTX 4080S-1 | 2048 | same E4A log directory | PPO running |
-| contact-s73 | E4A RTX 5080-1 | 2048 | same E4A log directory | PPO running |
-| nominal-s42 | E4A RTX 5080-2 | 2048 | `.../sota_20260919_e4a_nominal_s42_retry.log` | PPO running |
-| nominal-s73 | E4 RTX 4090-0 (`cn002`) | 2048 | `cluster_runs/sota_20260919_e4_fallback/logs/nominal_s73.log` | PPO running |
-| gait-s42 | E4 RTX 4090-1 (`cn002`) | 2048 | `cluster_runs/sota_20260919_e4_fallback/logs/gait_s42.log` | PPO running |
-| gait-s73 | E4 RTX Pro6000 | 4096 | `cluster_runs/sota_20260919_e4_fallback/logs/gait_s73.log` | PPO running |
+| main-s42 | E4A RTX 5090 | 4096 | `robot_lab_sota_20260919/cluster_runs/sota_20260919_e4a_wandb/logs/sota_20260919_e4a_wandb_main_s42.log` | PPO running with WandB online |
+| main-s73 | E4A RTX 4080S-0 | 2048 | same E4A log directory | PPO running with WandB online |
+| contact-s42 | E4A RTX 4080S-1 | 2048 | same E4A log directory | PPO running with WandB online |
+| contact-s73 | E4A RTX 5080-1 | 2048 | same E4A log directory | PPO running with WandB online |
+| nominal-s42 | E4A RTX 5080-2 | 2048 | `.../sota_20260919_e4a_wandb_nominal_s42_retry4.log` | PPO running with WandB online |
+| nominal-s73 | E4 RTX 4090-0 (`cn002`) | 2048 | `cluster_runs/sota_20260919_e4_fallback_wandb/logs/nominal_s73.log` | PPO running with WandB online |
+| gait-s42 | E4 RTX 4090-1 (`cn002`) | 2048 | `cluster_runs/sota_20260919_e4_fallback_wandb/logs/gait_s42.log` | PPO running with WandB online |
+| gait-s73 | E4 RTX Pro6000 | 4096 | `cluster_runs/sota_20260919_e4_fallback_wandb/logs/gait_s73.log` | PPO running with WandB online |
 
 The three E4A RTX 3080 nodes had pre-existing RoboDuet jobs using GPU memory. The initial 1024-env starts on those nodes hit PhysX out-of-memory and were stopped; no checkpoint from those attempts is used.
 

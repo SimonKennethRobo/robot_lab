@@ -1,11 +1,51 @@
 # GO2-X5 locomotion optimization handoff
 
-更新时间：2026-09-19  
+更新时间：2026-09-19 22:10（Asia/Shanghai）
 任务：`RobotLab-Isaac-VelocityPose-Mild-Unitree-Go2-X5-v0`
+
+## 下个 session 首要任务：分析 SOTA WandB 实验
+
+本轮 8 路 SOTA continuation 已重启并正在运行，全部从同一个真实机测试父模型开始：
+
+```text
+父模型：logs/rsl_rl/unitree_go2_x5_velocity_pose_mild/2026-09-14_20-00-39_gait_W30_formal_s42_1000u/model_10698.pt
+父模型 SHA256：909c731e5079290a6e3139edf7b06a96dcf146e4d038f4958bbf7bbe44c975eb
+起始 contract：go2_x5_locomotion_v2_64
+当前 contract：go2_x5_locomotion_v4_63
+目标：从 iteration 10698 训练到 34698（新增 24000 updates）
+```
+
+当前代码提交为 `dff76f8 feat: restart SOTA training with online wandb`，工作区干净。8 路训练均使用 `WANDB_MODE=online`、WandB project `robotlab`、`--logger wandb`；已经确认进入 PPO。项目入口：[WandB robotlab](https://wandb.ai/simon00715/robotlab)。
+
+| run | 设备 / envs | 配方摘要 | 训练日志 | WandB |
+|---|---|---|---|---|
+| main-s42 | E4A RTX 5090 / 4096 | contact 3.0, balance 0.15 | `cluster_runs/sota_20260919_e4a_wandb/logs/*main_s42.log` | [64kary2b](https://wandb.ai/simon00715/robotlab/runs/64kary2b) |
+| main-s73 | E4A RTX 4080S-0 / 2048 | contact 3.0, balance 0.15 | `*main_s73.log` | [8wxh0x8t](https://wandb.ai/simon00715/robotlab/runs/8wxh0x8t) |
+| contact-s42 | E4A RTX 4080S-1 / 2048 | contact 4.0, balance 0.12 | `*contact_s42.log` | [98v8g3y7](https://wandb.ai/simon00715/robotlab/runs/98v8g3y7) |
+| contact-s73 | E4A RTX 5080-1 / 2048 | contact 4.0, balance 0.12 | `*contact_s73.log` | [ju2448ej](https://wandb.ai/simon00715/robotlab/runs/ju2448ej) |
+| nominal-s42 | E4A RTX 5080-2 / 2048 | contact 2.0, balance 0.08, stance 1.0 | `*nominal_s42_retry4.log` | [3zdlh497](https://wandb.ai/simon00715/robotlab/runs/3zdlh497) |
+| nominal-s73 | E4 cn002 GPU0 / 2048 | contact 2.0, balance 0.08, stance 1.0 | `cluster_runs/sota_20260919_e4_fallback_wandb/logs/nominal_s73.log` | project 内按 run name 查找 |
+| gait-s42 | E4 cn002 GPU1 / 2048 | contact 3.0, balance 0.18, timing/swing/sync | `.../gait_s42.log` | project 内按 run name 查找 |
+| gait-s73 | E4 pro6000-01 GPU0 / 4096 | contact 3.0, balance 0.18, timing/swing/sync | `.../gait_s73.log` | project 内按 run name 查找 |
+
+注意：nominal-s42 在 E4A RTX 5080-2 上经历了多次启动尝试，最终有效进程是 `sota_20260919_e4a_wandb_nominal_s42_retry4`，原因是该节点本地 IsaacSim bundle 缺少 `pydantic` 和初始 PYTHONPATH 缺少 IsaacLab source；最终已补齐并开始 PPO。不要把 retry1–3 的失败日志当成实验结果。
+
+### 下个 session 分析顺序
+
+1. 先检查 8 路进程是否仍在运行，以及各日志最新 `Learning iteration`、是否出现 `Traceback`、`OOM` 或 `NaN`。
+2. 在 WandB project 中按 run name 对齐 8 路曲线；先比较 `Metrics/base_velocity_pose/*`、height/orientation error、failure/recovery、四脚接触、stance width、leg velocity balance 和 gait timing，不按总 reward 直接选模型。
+3. 以约 20k、28k、34,698 为固定 checkpoint；如果某一路提前退出，保留已生成的最近 `model_*.pt` 并记录退出原因。
+4. 对每个 branch/seed 做相同确定性评估：stand、forward `0.3/0.6`、lateral left/right、yaw-only、forward+yaw、height `0.28/0.33/0.38`、push、arm full-extension hold。重点记录跌倒/恢复率、height/tilt MAE/RMSE、四脚接触和接触丢失、每腿速度 p95 及 `FR / median(other legs)`。
+5. 选模硬门槛：不能有 yaw-only 系统性失败、不能出现单腿速度尖峰、height 命令不能塌缩、不能明显回退 W30 前进/横移跟踪，push 失败率必须可接受；训练 reward 仅作辅助。
+6. 最后再用 `play.py` / MuJoCo 回放候选 checkpoint，确认四足间距、原地旋转、前进+旋转甩腿和高度命令响应；不要只看 WandB 标量。
+
+固定配置与配方详见 [sota_training_plan_20260919.md](sota_training_plan_20260919.md)。E4A 启动器是 [launch_sota_e4a_20260919.sh](../scripts/cluster/launch_sota_e4a_20260919.sh)，E4 Slurm 入口是 [submit_sota_8way.sh](../scripts/cluster/submit_sota_8way.sh)。
+
+---
 
 ## 2026-09-19 session continuation
 
-本 session 没有使用或修改其他项目的 Slurm 队列。工作区当前有未提交改动，涉及伸展诊断、USD 末端运动学、固定场景 smoke、成对 checkpoint 评估和续训脚本。
+以下内容是本轮 SOTA continuation 之前的历史诊断记录；其描述的未提交状态和 offline 配置已过时，当前状态以文档顶部为准。
 
 已经完成：
 
@@ -60,7 +100,7 @@ d393709 feat: stabilize quadruped stance and leg speed
 
 - `python -m unittest scripts/tests/test_locomotion_robustness.py scripts/tests/test_robustness_cli.py`：16/16 通过。
 - IsaacLab 2.3.0 headless smoke：8 env、30 steps、`domain_rand=none` 通过；另完成 USD FK 对照，最大误差约 `2.1e-6 m`。
-- 训练使用 `WANDB_MODE=offline` 和 TensorBoard，没有 WandB 在线同步。
+- 历史 stability sweep 使用过 `WANDB_MODE=offline` 和 TensorBoard；本轮 SOTA continuation 已切换为 WandB online，详见文档顶部。
 
 ## 集群实验记录
 
