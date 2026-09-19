@@ -41,8 +41,10 @@ for spec in "${specs[@]}"; do
   overrides="$common $branch_overrides"
   remote_script=$(cat <<EOF
 set -euo pipefail
+set +u
 source /home/simon-nfs/miniconda3/etc/profile.d/conda.sh
 conda activate isaaclab230
+set -u
 export PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1 WANDB_MODE=offline
 export PYTHONPATH="$ROOT/source/robot_lab:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab_tasks:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab_rl:\${PYTHONPATH:-}"
 export XDG_CACHE_HOME="/local_ssd/\${USER}/.cache/robot_lab_sota_20260919"
