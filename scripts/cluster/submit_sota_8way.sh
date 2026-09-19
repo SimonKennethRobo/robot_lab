@@ -31,7 +31,7 @@ mkdir -p "$SNAPSHOT_ROOT/cluster_runs/slurm" "$SNAPSHOT_ROOT/cluster_runs/jobs"
 submit_one() {
   local name=$1 seed=$2 overrides=$3
   sbatch --parsable \
-    --gres=shard:1 --constraint= \
+    --gres=shard:1 --constraint= --cpus-per-task=4 --mem=16G \
     --job-name="$name" \
     --output="$SNAPSHOT_ROOT/cluster_runs/slurm/%x-%j.out" \
     --error="$SNAPSHOT_ROOT/cluster_runs/slurm/%x-%j.err" \
