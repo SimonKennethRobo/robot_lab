@@ -127,6 +127,15 @@ class BoundedArmMotion:
         self.extension_hold_s = full_extension_hold_s
         self.extension_max_velocity = min(max_velocity, full_extension_max_velocity)
         self.extension_max_acceleration = min(max_acceleration, full_extension_max_acceleration)
+        # Latch the goal sent this step before the phase and training clock advance.
+        self.commanded_extension_goal = self.q.clone()
+        self.commanded_extension_outbound = torch.zeros_like(self.mode, dtype=torch.bool)
+
+    def extension_goal(self, intensity: float) -> torch.Tensor:
+        """Return the curriculum-scaled target used by the extension controller."""
+        intensity = min(1.0, max(0.0, intensity))
+        goal = self.extension_rest + intensity * (self.extension_target - self.extension_rest)
+        return torch.where(self.extension_returning[:, None], self.extension_rest, goal)
 
     def reset(self, env_ids, joint_pos):
         self.q[env_ids] = joint_pos.clamp(self.lower[env_ids], self.upper[env_ids])
@@ -145,6 +154,8 @@ class BoundedArmMotion:
         self.extension_rest[env_ids] = self.q[env_ids]
         self.extension_returning[env_ids] = False
         self.extension_hold_age[env_ids] = 0.0
+        self.commanded_extension_goal[env_ids] = self.q[env_ids]
+        self.commanded_extension_outbound[env_ids] = False
         lower, upper = self.lower[env_ids], self.upper[env_ids]
         radius = (upper - lower) * 0.5
         self.center[env_ids] = (upper + lower) * 0.5
@@ -180,8 +191,9 @@ class BoundedArmMotion:
             axis_sign = torch.where(torch.sin(self.phase) >= 0, 1.0, -1.0)
             reversal = self.center + direction[:, None] * axis_sign * self.amplitude
             target = torch.where((self.mode == 3)[:, None], reversal, target)
-        extension_goal = self.extension_rest + intensity * (self.extension_target - self.extension_rest)
-        extension_goal = torch.where(self.extension_returning[:, None], self.extension_rest, extension_goal)
+        extension_goal = self.extension_goal(intensity)
+        self.commanded_extension_goal.copy_(extension_goal)
+        self.commanded_extension_outbound = extension & ~self.extension_returning & (intensity > 0)
         target = torch.where(extension[:, None], extension_goal, target)
         # Count a hold only after the target AND measured arm have arrived.
         arrived = ((self.q - extension_goal).abs().amax(-1) < 0.02) & (self.v.abs().amax(-1) < 0.05)
@@ -209,6 +221,26 @@ class BoundedArmMotion:
         self.v = (new_q - self.q) / self.dt
         self.q = new_q
         return self.q
+
+
+class ExtensionArrivalTracker:
+    """One arrival per outbound phase; zero intensity and return are excluded."""
+
+    def __init__(self, num_envs, device, dt):
+        self.dt = dt
+        self.elapsed = torch.zeros(num_envs, device=device)
+        self.recorded = torch.zeros(num_envs, dtype=torch.bool, device=device)
+
+    def reset(self, env_ids):
+        self.elapsed[env_ids] = 0
+        self.recorded[env_ids] = False
+
+    def update(self, outbound, settled):
+        self.elapsed = torch.where(outbound, self.elapsed + self.dt, 0.0)
+        self.recorded &= outbound
+        arrival = outbound & settled & ~self.recorded
+        self.recorded |= arrival
+        return arrival, torch.where(arrival, self.elapsed, 0.0)
 
 
 class RecoveryTracker:

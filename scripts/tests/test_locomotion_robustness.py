@@ -196,6 +196,47 @@ class RobustnessTests(unittest.TestCase):
             torch.testing.assert_close(arm.q[0], torch.full((6,), 0.15))
             self.assertTrue((arm.v[0] == 0).all())
 
+    def test_extension_goal_matches_executed_phase_and_curriculum(self):
+        arm = math.BoundedArmMotion(
+            torch.full((2, 6), -2.0), torch.full((2, 6), 2.0), 0.02,
+            full_extension_fraction=1.0, full_extension_joint_pos=[1.0] * 6,
+            full_extension_hold_s=0.02,
+        )
+        arm.reset(torch.arange(2), torch.zeros(2, 6))
+        arm.step(0.0)
+        self.assertFalse(arm.commanded_extension_outbound.any())
+        torch.testing.assert_close(arm.commanded_extension_goal, torch.zeros(2, 6))
+        arm.q[:] = 0.5
+        arm.v.zero_()
+        arm.step(0.5, torch.full((2, 6), 0.5))
+        self.assertTrue(arm.extension_returning.all())
+        self.assertTrue(arm.commanded_extension_outbound.all())
+        torch.testing.assert_close(arm.commanded_extension_goal, torch.full((2, 6), 0.5))
+        arm.step(0.5)
+        self.assertFalse(arm.commanded_extension_outbound.any())
+        torch.testing.assert_close(arm.commanded_extension_goal, torch.zeros(2, 6))
+        arm.reset(torch.tensor([0]), torch.full((1, 6), 0.2))
+        self.assertFalse(arm.extension_returning[0])
+        torch.testing.assert_close(arm.extension_goal(0.5)[0], torch.full((6,), 0.6))
+
+    def test_extension_arrival_excludes_idle_return_and_partial_reset(self):
+        tracker = math.ExtensionArrivalTracker(2, "cpu", 0.02)
+        active = torch.ones(2, dtype=torch.bool)
+        inactive = ~active
+        arrived, _ = tracker.update(inactive, active)
+        self.assertFalse(arrived.any())
+        tracker.update(active, inactive)
+        arrived, elapsed = tracker.update(active, active)
+        self.assertTrue(arrived.all())
+        torch.testing.assert_close(elapsed, torch.full((2,), 0.04))
+        self.assertFalse(tracker.update(active, active)[0].any())
+        tracker.reset(torch.tensor([0]))
+        arrived, elapsed = tracker.update(active, active)
+        self.assertEqual(arrived.tolist(), [True, False])
+        torch.testing.assert_close(elapsed, torch.tensor([0.02, 0.0]))
+        tracker.update(inactive, active)
+        self.assertTrue(tracker.update(active, active)[0].all())
+
     def test_wbc_arm_zero_probabilities_are_applied(self):
         arm = math.BoundedArmMotion(
             torch.full((8, 6), -1.0),

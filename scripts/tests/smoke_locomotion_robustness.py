@@ -17,6 +17,11 @@ parser.add_argument("--domain_rand", choices=("none", "benchmark", "sim2real"), 
 parser.add_argument("--ppo_iterations", type=int, default=0)
 parser.add_argument("--observation_layout", default="go2_x5_locomotion_v4_63")
 parser.add_argument("--full_extension_fraction", type=float, default=0.25)
+parser.add_argument(
+    "--arm_full_extension_eval",
+    action="store_true",
+    help="Use a fixed zero-velocity, full-extension scenario at the final arm curriculum target.",
+)
 parser.add_argument("--output", default="outputs/locomotion_smoke")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
@@ -37,10 +42,23 @@ from robot_lab.tasks.manager_based.locomotion.velocity_pose.observation_contract
 def main():
     cfg = parse_env_cfg(args.task, device=args.device, num_envs=args.num_envs)
     cfg.seed = 42
-    cfg.robustness.iteration_override = args.iteration
-    cfg.robustness.domain_rand = args.domain_rand
+    cfg.robustness.iteration_override = 16000 if args.arm_full_extension_eval else args.iteration
+    cfg.robustness.domain_rand = "none" if args.arm_full_extension_eval else args.domain_rand
     cfg.robustness.observation_layout = args.observation_layout
-    cfg.robustness.arm_full_extension_fraction = args.full_extension_fraction
+    cfg.robustness.arm_full_extension_fraction = 1.0 if args.arm_full_extension_eval else args.full_extension_fraction
+    if args.arm_full_extension_eval:
+        cfg.robustness.arm_full_extension_standing_fraction = 1.0
+        command = cfg.commands.base_velocity_pose
+        command.resampling_time_range = (1.0e9, 1.0e9)
+        command.rel_standing_envs = 1.0
+        command.ranges.lin_vel_x = (0.0, 0.0)
+        command.ranges.lin_vel_y = (0.0, 0.0)
+        command.ranges.ang_vel_z = (0.0, 0.0)
+        command.heading_command = False
+        command.ranges.heading = None
+        command.ranges.height = (command.default_height, command.default_height)
+        command.ranges.roll = (0.0, 0.0)
+        command.ranges.pitch = (0.0, 0.0)
     cfg.log_dir = args.output
     if cfg.scene.terrain.terrain_generator is not None:
         cfg.scene.terrain.terrain_generator.num_rows = 1
@@ -91,15 +109,23 @@ def main():
         before_push = env.scene["robot"].data.root_vel_w.clone()
         push_locomotion(env, push_ids)
         delta = env.scene["robot"].data.root_vel_w - before_push
-        push_scale = runtime.progress("push") * (args.domain_rand != "none")
+        push_scale = runtime.progress("push") * (cfg.robustness.domain_rand != "none")
         assert delta[:, :2].abs().max() <= cfg.robustness.push_max_xy * push_scale + 1e-6
         assert delta[:, 3:].abs().max() <= cfg.robustness.push_max_angular * push_scale + 1e-6
         assert (delta[:, 2] == 0).all()
         if push_scale:
             assert delta[push_ids].abs().sum() > 0
+        runtime.capture_evaluation = True
+        max_fk_error = 0.0
         for _ in range(args.steps):
             obs, reward, terminated, timeout, info = env.step(torch.zeros(args.num_envs, 12, device=env.device))
             assert torch.isfinite(obs["policy"]).all() and torch.isfinite(reward).all()
+            frame = runtime.last_evaluation
+            fk_error = (runtime.arm_kinematics.position(frame["arm_pos"]) - frame["ee_body"]).norm(dim=-1).max()
+            max_fk_error = max(max_fk_error, float(fk_error))
+            assert fk_error < 0.003, f"USD FK differs from measured link6: {fk_error} m"
+            if args.arm_full_extension_eval:
+                assert (frame["command"][:, :3] == 0).all()
             assert (action._arm_controller.q <= action._arm_controller.upper + 1e-6).all()
             assert (action._arm_controller.q >= action._arm_controller.lower - 1e-6).all()
         assert torch.equal(cohort, runtime.hard)
@@ -107,7 +133,7 @@ def main():
         assert valid.all(), "Base scanner must hit ground in every environment"
         # Auto-reset may have resampled a payload after the final physics step.
         runtime.apply_payload()
-        mass = runtime.payload_mass * runtime.progress("arm") * (args.domain_rand != "none")
+        mass = runtime.payload_mass * runtime.progress("arm") * (cfg.robustness.domain_rand != "none")
         torch.testing.assert_close(runtime.forces[:, 0, 2], -9.81 * mass)
         # Check a partial reset does not reassign cohorts or retain arm velocity.
         ids = torch.arange(min(2, args.num_envs), device=env.device)
@@ -123,7 +149,7 @@ def main():
             "action_dim": 12,
             "hard_envs": int(cohort.sum()),
             "iteration": runtime.iteration,
-            "domain_rand": args.domain_rand,
+            "domain_rand": cfg.robustness.domain_rand,
             "ground_height_min_max": [float(height.min()), float(height.max())],
             "leg_joint_order": actual_order,
             "payload_kg_max": float(mass.max()),
@@ -133,6 +159,8 @@ def main():
             },
             "ppo_iterations": args.ppo_iterations,
             "push_delta_max": float(delta.abs().max()),
+            "arm_full_extension_eval": args.arm_full_extension_eval,
+            "ee_fk_max_error_m": max_fk_error,
         }
         if args.ppo_iterations:
             from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
@@ -173,6 +201,11 @@ def main():
                 raise AssertionError("Unversioned checkpoint was accepted")
             report["legacy_checkpoint_rejected"] = True
         records = [json.loads(line) for line in (output / "locomotion_metrics.jsonl").read_text().splitlines()]
+        if args.arm_full_extension_eval:
+            extension_case_key = "Robustness/all/all/arm_full_extension_case_mae"
+            extension_error_key = "Robustness/all/all/arm_extension_target_error_rad_mae"
+            assert records and records[-1][extension_case_key] == 1.0
+            assert records[-1][extension_error_key] >= 0.0
         for record in records:
             count = record["Robustness/all/all/samples"]
             assert count == args.num_envs * cfg.robustness.metrics_interval

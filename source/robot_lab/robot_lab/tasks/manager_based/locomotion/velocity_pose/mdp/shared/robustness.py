@@ -20,7 +20,8 @@ from robot_lab.tasks.manager_based.locomotion.velocity.mdp.rewards import (
     feet_height_body,
 )
 
-from .robustness_math import RecoveryTracker, contact_slip, fixed_hard_mask, gravity_wrench, ground_height, ramp
+from .arm_kinematics import ArmKinematics
+from .robustness_math import ExtensionArrivalTracker, RecoveryTracker, contact_slip, fixed_hard_mask, gravity_wrench, ground_height, ramp
 
 
 def prepare_robustness_cfg(cfg):  # noqa: C901
@@ -301,6 +302,11 @@ class LocomotionRuntime:
         "air_time_rr_s",
         "arm_full_extension_case",
         "arm_full_extension_at_target",
+        "arm_extension_target_error_rad",
+        "arm_extension_torque_saturation",
+        "arm_extension_time_to_target_s",
+        "arm_extension_ee_forward_error_m",
+        "arm_extension_command_tracking_error_rad",
         "standing_four_feet_contact_fraction",
         "standing_contact_count",
         "joint_speed_fl_radps",
@@ -335,6 +341,11 @@ class LocomotionRuntime:
         self.age = torch.zeros_like(self.failure_age)
         self.previous_arm_velocity = torch.zeros(env.num_envs, 6, device=env.device)
         self.velocity_valid = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        self.extension_arrival = ExtensionArrivalTracker(env.num_envs, env.device, env.step_dt)
+        self.arm_kinematics = ArmKinematics(
+            self.robot.cfg.spawn.usd_path, [self.robot.joint_names[i] for i in self.arm_ids], env.device
+        )
+        self.capture_evaluation = False
         self.previous_metrics = {}
         self.sums = torch.zeros(9, len(self.metric_names), device=env.device)
         self.squares = torch.zeros_like(self.sums)
@@ -367,6 +378,7 @@ class LocomotionRuntime:
         self.failure_age[env_ids] = 0
         self.age[env_ids] = 0
         self.velocity_valid[env_ids] = False
+        self.extension_arrival.reset(env_ids)
         self.payload_mass[env_ids] = torch.rand(len(env_ids), device=self.env.device) * self.cfg.payload_max_kg
         limits = torch.tensor(self.cfg.payload_offset_m, device=self.env.device)
         self.payload_offset[env_ids] = (2 * torch.rand(len(env_ids), 3, device=self.env.device) - 1) * limits
@@ -468,11 +480,23 @@ class LocomotionRuntime:
         )
         arm_controller = env.action_manager.get_term("joint_pos")._arm_controller
         extension_case = arm_controller.mode == 4
-        extension_reached = extension_case & (
-            (data.joint_pos[:, self.arm_ids] - arm_controller.extension_target).abs().amax(-1) < 0.15
-        )
-        errors = torch.cat((errors, swing_height, swing_speed, air_time,
-                            extension_case[:, None].float(), extension_reached[:, None].float()), dim=-1)
+        extension_goal = arm_controller.commanded_extension_goal
+        outbound = arm_controller.commanded_extension_outbound
+        extension_error = (data.joint_pos[:, self.arm_ids] - extension_goal).abs().amax(-1)
+        extension_reached = outbound & (extension_error < 0.15)
+        settled = extension_reached & ((arm_controller.q - extension_goal).abs().amax(-1) < 0.02)
+        settled &= arm_controller.v.abs().amax(-1) < 0.05
+        extension_arrival, extension_time_to_target = self.extension_arrival.update(outbound, settled)
+        ee_body = quat_apply_inverse(data.root_quat_w, ee_offset)
+        ee_goal = self.arm_kinematics.position(extension_goal)
+        ee_error = ee_body[:, 0] - ee_goal[:, 0]
+        tracking_error = (data.joint_pos[:, self.arm_ids] - arm_controller.q).abs().amax(-1)
+        errors = torch.cat((
+            errors, swing_height, swing_speed, air_time,
+            extension_case[:, None].float(), extension_reached[:, None].float(),
+            extension_error[:, None], saturated[:, None], extension_time_to_target[:, None],
+            ee_error[:, None], tracking_error[:, None],
+        ), dim=-1)
         standing = cmd[:, :3].norm(dim=-1) < 0.1
         current_contact = sensor.data.net_forces_w[:, self.contact_ids].norm(dim=-1) > 1.0
         leg_speed = data.joint_vel[:, self.leg_ids].reshape(env.num_envs, 4, 3).square().mean(-1).sqrt()
@@ -488,9 +512,12 @@ class LocomotionRuntime:
         sample_valid = torch.ones_like(errors)
         sample_valid[:, 7] = self.velocity_valid.float()
         sample_valid[:, 14:26] = swing.repeat(1, 3)
-        sample_valid[:, 26:28] = extension_case[:, None]
-        sample_valid[:, 28:30] = standing[:, None]
-        sample_valid[:, 30:34] = (~standing)[:, None]
+        # Case fraction uses all samples; outbound diagnostics exclude return/rest.
+        sample_valid[:, 27:30] = outbound[:, None]
+        sample_valid[:, 30:31] = extension_arrival[:, None]
+        sample_valid[:, 31:33] = outbound[:, None]
+        sample_valid[:, 33:35] = standing[:, None]
+        sample_valid[:, 35:39] = (~standing)[:, None]
         # Numerators and denominators must use the same conditional samples.
         self.sums -= masks @ (errors.abs() * (1 - sample_valid))
         self.squares -= masks @ (errors.square() * (1 - sample_valid))
@@ -520,6 +547,23 @@ class LocomotionRuntime:
             }
             for name, value in values.items():
                 self.window_maxima[name] = torch.maximum(self.window_maxima.get(name, torch.zeros_like(value)), value)
+        extension_max = torch.where(outbound, extension_error, 0.0).max()
+        key = "arm_extension_joint_error_max_rad"
+        self.window_maxima[key] = torch.maximum(self.window_maxima.get(key, torch.zeros_like(extension_max)), extension_max)
+        if self.capture_evaluation:
+            # Capture terminal measurements before ManagerBasedRLEnv auto-resets.
+            self.last_evaluation = {
+                "command": cmd.clone(), "arm_pos": data.joint_pos[:, self.arm_ids].clone(),
+                "arm_goal": extension_goal.clone(), "arm_error_rad": extension_error.clone(),
+                "arm_torque_saturation": saturated.clone(), "arm_arrival": extension_arrival.clone(),
+                "arm_arrival_time_s": extension_time_to_target.clone(), "arm_reached": extension_reached.clone(),
+                "ee_forward_error_m": ee_error.clone(), "ee_body": ee_body.clone(),
+                "leg_velocity": data.joint_vel[:, self.leg_ids].reshape(env.num_envs, 4, 3).clone(),
+                "foot_force": sensor.data.net_forces_w[:, self.contact_ids].clone(),
+                "contact": current_contact.clone(), "failed": failed.clone(), "fallen": fallen.clone(),
+                "height": current_height.clone(), "velocity_error": errors[:, :3].clone(),
+                "joint_torque": data.applied_torque.clone(),
+            }
         return failed
 
     def record_completed(self, env_ids):
@@ -539,12 +583,14 @@ class LocomotionRuntime:
         logs = {}
         if self.recovery is not None:
             logs.update(self.recovery.flush())
-            logs.update({"Numerics/" + key: value.clone() for key, value in self.window_maxima.items()})
-            self.window_maxima.clear()
+        logs.update({"Numerics/" + key: value.clone() for key, value in self.window_maxima.items()})
+        self.window_maxima.clear()
         for index, group in enumerate(self.group_names):
             prefix = "Robustness/" + group + "/"
             logs[prefix + "samples"] = self.counts[index].clone()
             logs[prefix + "arm_acceleration_samples"] = self.value_counts[index, 7].clone()
+            logs[prefix + "arm_extension_outbound_samples"] = self.value_counts[index, 27].clone()
+            logs[prefix + "arm_extension_arrivals"] = self.value_counts[index, 30].clone()
             for column, name in enumerate(self.metric_names):
                 logs[prefix + name + "_mae"] = means[index, column]
                 if column < 5 or name.endswith("foot_width_m"):

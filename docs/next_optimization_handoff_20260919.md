@@ -3,9 +3,43 @@
 更新时间：2026-09-19  
 任务：`RobotLab-Isaac-VelocityPose-Mild-Unitree-Go2-X5-v0`
 
+## 2026-09-19 session continuation
+
+本 session 没有使用或修改其他项目的 Slurm 队列。工作区当前有未提交改动，涉及伸展诊断、USD 末端运动学、固定场景 smoke、成对 checkpoint 评估和续训脚本。
+
+已经完成：
+
+- 伸展诊断改为使用 curriculum 实际发出的 `extension_goal`，并记录目标误差、伸展力矩饱和、首次到位时间、末端前向误差和 command tracking error；
+- 增加从当前 Go2-X5 USD 运动链计算 `link6` 位置的 `ArmKinematics`，模拟器实测位置对照最大误差约 `2.1e-6 m`；
+- 增加固定零速度、100% 完全伸展、最终 curriculum 的 `--arm_full_extension_eval` smoke 模式；
+- 增加 `scripts/reinforcement_learning/rsl_rl/evaluate_stability.py`，覆盖伸展站立、0.3/0.6 m/s 前进减速、左右横移和 push；
+- IsaacLab 2.3.0 下 CPU 回归测试 **16/16 通过**；8 env、30 steps、`domain_rand=none` smoke 通过；policy/command/action contract 仍为 `63 / 6 / 12`。
+
+第一组真实固定评估（5577，seed 42，16 个并行环境，20 s）没有跌倒，但平均机械臂目标误差约 `0.39 rad`，末端前向误差约 `0.056 m`，四脚接触率很低。轨迹中机械臂实际力矩达到约 `20 Nm`，而 saturation 指标仍报 `0`；这说明当前 PhysX effort limit 口径仍不能代表显式 PD actuator 的 `20 Nm` clip limit，不能据此宣称没有饱和。
+
+评估输出：
+
+```text
+outputs/stability_20260919/paired_eval/
+outputs/stability_20260919/paired_eval.log
+```
+
+5575、5577、5578 的 seed 42/73 均已完成，配对初始状态校验通过；没有遗留评估进程，不要重复运行这组评估。
+
+成对评估摘要（每个场景 16 个 replica，结果文件未纳入 git）如下：
+
+- 机械臂完全伸展场景的到位率为 `0`，平均实际目标误差约 `0.36–0.44 rad`，末端前向误差约 `0.054–0.063 m`；因此当前 12000-iteration checkpoint 尚未证明可以完成伸展保持。
+- 5577 在运动场景整体最稳：两 seed 下前进/横移未出现系统性跌倒，0.6 m/s 前进四脚接触率约 `0.15`；但右移仍有 `0–6.25%` 跌倒，不能直接上机。
+- 5575 的 0.6 m/s 前进接触率约 `0.15`，但 push 场景有 `12.5%` 跌倒；5578 的右移最差（最高 `18.75%` 跌倒），暂不推荐。
+- 5577 的 `FR / median(other legs)` 速度 p95 仍约 `11–23`，说明需继续核对接触/动作映射，不能仅凭训练 rollout 判定右前腿问题已解决。
+
+当前结论：5577 可作为下一轮训练和运动回归的候选，5575 可作为站立/接触对照；机械臂伸展指标和 actuator saturation 口径仍是 P0，长训脚本暂不应直接提交到集群。
+
+尚未提交新的长训练。`scripts/cluster/continue_stability_e48f.sh` 是从 5577 的 `model_11999.pt` 继续 6000 次、目标到 18000 的草稿；它依赖外部生成的 `SHA256SUMS` 和已完成的评估 receipt，本次仅提交脚本供后续审核，不启动长训。不要直接提交原五路 stability sweep.
+
 ## 当前代码状态
 
-当前仓库没有未提交改动。用于本轮训练的提交是：
+基线提交是 `d393709 feat: stabilize quadruped stance and leg speed`。本 session 在其上有未提交的诊断、评估和续训辅助改动；不要把这些改动误认为已经提交到训练快照。
 
 ```text
 d393709 feat: stabilize quadruped stance and leg speed
@@ -24,8 +58,8 @@ d393709 feat: stabilize quadruped stance and leg speed
 
 本地验证结果：
 
-- `python -m unittest scripts/tests/test_locomotion_robustness.py scripts/tests/test_robustness_cli.py`：14/14 通过。
-- IsaacLab headless smoke：8 env、30 steps、`domain_rand=none` 通过。
+- `python -m unittest scripts/tests/test_locomotion_robustness.py scripts/tests/test_robustness_cli.py`：16/16 通过。
+- IsaacLab 2.3.0 headless smoke：8 env、30 steps、`domain_rand=none` 通过；另完成 USD FK 对照，最大误差约 `2.1e-6 m`。
 - 训练使用 `WANDB_MODE=offline` 和 TensorBoard，没有 WandB 在线同步。
 
 ## 集群实验记录
