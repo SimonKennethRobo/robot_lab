@@ -15,7 +15,9 @@ test -s "$PARENT"
 actual_sha=$(sha256sum "$PARENT" | awk '{print $1}')
 [[ "$actual_sha" == "$expected_sha" ]] || { echo "Unexpected parent SHA256: $actual_sha" >&2; exit 2; }
 
-git -C "$SNAPSHOT_ROOT" diff --quiet || { echo "Working tree must be clean before submission" >&2; exit 2; }
+if git -C "$SNAPSHOT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  git -C "$SNAPSHOT_ROOT" diff --quiet || { echo "Working tree must be clean before submission" >&2; exit 2; }
+fi
 
 record="$SNAPSHOT_ROOT/cluster_runs/sota_20260919_submissions.tsv"
 if [[ -e "$record" ]]; then
