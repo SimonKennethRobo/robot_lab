@@ -8,6 +8,7 @@ PORT=${PORT:-65522}
 REMOTE_USER=${REMOTE_USER:-simon-nfs}
 ADDITIONAL_ITERATIONS=${ADDITIONAL_ITERATIONS:-24000}
 TAG=${TAG:-sota_20260919_e4a}
+RUN_FILTER=${RUN_FILTER:-}
 
 expected_sha=909c731e5079290a6e3139edf7b06a96dcf146e4d038f4958bbf7bbe44c975eb
 actual_sha=$(sha256sum "$PARENT" | awk '{print $1}')
@@ -36,6 +37,8 @@ declare -a specs=(
 
 for spec in "${specs[@]}"; do
   IFS='|' read -r branch seed host gpu num_envs branch_overrides <<< "$spec"
+  run_key="${branch}_s${seed}"
+  [[ -z "$RUN_FILTER" || ",${RUN_FILTER}," == *",${run_key},"* ]] || continue
   name="${TAG}_${branch}_s${seed}"
   log="$ROOT/cluster_runs/$TAG/logs/${name}.log"
   overrides="$common $branch_overrides"
@@ -45,8 +48,8 @@ set +u
 source /home/simon-nfs/miniconda3/etc/profile.d/conda.sh
 conda activate isaaclab230
 set -u
-export PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1 WANDB_MODE=offline
-export PYTHONPATH="$ROOT/source/robot_lab:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab_tasks:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab_rl:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/_isaac_sim/extscache/omni.services.pip_archive-0.16.0+107.0.3.lx64.cp311/pip_prebundle:\${PYTHONPATH:-}"
+export PYTHONUNBUFFERED=1 HYDRA_FULL_ERROR=1 WANDB_MODE=online WANDB_PROJECT=robotlab
+export PYTHONPATH="$ROOT/source/robot_lab:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab_tasks:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/source/isaaclab_rl:/opt/isaac/isaacsim-5.0/extscache/omni.kit.pip_archive-0.0.0+8131b85d.lx64.cp311/pip_prebundle:/home/simon-nfs/Apps/Simulator/Isaac/isaac-lab-2.3.0/_isaac_sim/extscache/omni.services.pip_archive-0.16.0+107.0.3.lx64.cp311/pip_prebundle:\${PYTHONPATH:-}"
 export XDG_CACHE_HOME="/local_ssd/\${USER}/.cache/robot_lab_sota_20260919"
 export TORCH_EXTENSIONS_DIR="\$XDG_CACHE_HOME/torch_extensions"
 mkdir -p "\$XDG_CACHE_HOME" "\$TORCH_EXTENSIONS_DIR"
@@ -54,7 +57,7 @@ cd "$ROOT"
 nohup env CUDA_VISIBLE_DEVICES=$gpu python -u scripts/reinforcement_learning/rsl_rl/train.py \\
   --task RobotLab-Isaac-VelocityPose-Mild-Unitree-Go2-X5-v0 --headless \\
   --device cuda:0 --num_envs $num_envs --max_iterations $ADDITIONAL_ITERATIONS \\
-  --seed $seed --run_name "$name" --logger tensorboard --warm_start "$PARENT" \\
+  --seed $seed --run_name "$name" --logger wandb --log_project_name robotlab --warm_start "$PARENT" \\
   $overrides >"$log" 2>&1 < /dev/null &
 echo \$!
 EOF

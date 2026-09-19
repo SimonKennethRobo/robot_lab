@@ -36,7 +36,7 @@ submit_one() {
     --job-name="$name" \
     --output="$SNAPSHOT_ROOT/cluster_runs/slurm/%x-%j.out" \
     --error="$SNAPSHOT_ROOT/cluster_runs/slurm/%x-%j.err" \
-    --export="ALL,SNAPSHOT_ROOT=$SNAPSHOT_ROOT,TASK=$TASK,RUN_NAME=$name,SEED=$seed,NUM_ENVS=$NUM_ENVS,MAX_ITERATIONS=$ADDITIONAL_ITERATIONS,CONDA_ENV=$CONDA_ENV,WARM_START=$PARENT,LOGGER=tensorboard,EXTRA_OVERRIDES=$overrides" \
+    --export="ALL,SNAPSHOT_ROOT=$SNAPSHOT_ROOT,TASK=$TASK,RUN_NAME=$name,SEED=$seed,NUM_ENVS=$NUM_ENVS,MAX_ITERATIONS=$ADDITIONAL_ITERATIONS,CONDA_ENV=$CONDA_ENV,WARM_START=$PARENT,LOGGER=wandb,WANDB_PROJECT=robotlab,EXTRA_OVERRIDES=$overrides" \
     "$SNAPSHOT_ROOT/tmp/cluster/train_go2_x5_slurm.sh"
 }
 
