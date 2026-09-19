@@ -56,7 +56,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--rl_sar_root", "--rl-sar-root", dest="rl_sar_root", default=None,
-    help="rl_sar repository root; defaults to the sibling Locomotion/rl_sar directory.",
+    help="rl_sar SDK root for command-contract validation; defaults to sibling Locomotion/rl_sar.",
 )
 parser.add_argument(
     "--rl_sar_config_name", "--rl-sar-config-name", dest="rl_sar_config_name", default=None,
@@ -168,6 +168,7 @@ def _export_rl_sar(resume_path, agent_cfg):
             f"rl_sar repository not found at {rl_sar_root}; pass --rl_sar_root or use --no-export_rl_sar"
         )
     config_name = args_cli.rl_sar_config_name or _default_rl_sar_config_name(resume_path)
+    output_dir = Path(resume_path).parent / "rl_sar" / config_name
     exporter = Path(__file__).resolve().with_name("export_rl_sar.py")
     agent_dict = agent_cfg.to_dict() if hasattr(agent_cfg, "to_dict") else agent_cfg
     with tempfile.TemporaryDirectory(prefix="robot_lab_rl_sar_") as temp_dir:
@@ -178,6 +179,8 @@ def _export_rl_sar(resume_path, agent_cfg):
             str(exporter),
             "--checkpoint",
             str(Path(resume_path).resolve()),
+            "--output-dir",
+            str(output_dir),
             "--rl-sar-root",
             str(rl_sar_root),
             "--config-name",
@@ -186,7 +189,7 @@ def _export_rl_sar(resume_path, agent_cfg):
             str(agent_path),
         ]
         subprocess.run(command, check=True)
-    print(f"[INFO] rl_sar export: {rl_sar_root / 'policy' / 'go2_x5' / config_name}")
+    print(f"[INFO] rl_sar export: {output_dir}")
 
 
 # PLACEHOLDER: Extension template (do not remove this comment)

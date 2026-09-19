@@ -42,6 +42,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--rl-sar-root", type=Path, required=True)
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory for the generated policy.pt, config.yaml, and manifest.json; defaults to rl_sar/policy/go2_x5/CONFIG.",
+    )
     parser.add_argument("--config-name", default="robot_lab_mild_s2r_s42_8200")
     parser.add_argument(
         "--agent-config",
@@ -257,7 +262,7 @@ def main() -> None:
     actor = build_actor(state, agent_cfg, input_dim)
 
     config_key = f"go2_x5/{args.config_name}"
-    output_dir = rl_sar_root / "policy" / "go2_x5" / args.config_name
+    output_dir = args.output_dir.resolve() if args.output_dir else rl_sar_root / "policy" / "go2_x5" / args.config_name
     output_dir.mkdir(parents=True, exist_ok=True)
     scripted = torch.jit.script(actor)
     scripted.save(str(output_dir / "policy.pt"))
