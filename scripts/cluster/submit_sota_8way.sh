@@ -19,7 +19,8 @@ if git -C "$SNAPSHOT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
   git -C "$SNAPSHOT_ROOT" diff --quiet || { echo "Working tree must be clean before submission" >&2; exit 2; }
 fi
 
-record="$SNAPSHOT_ROOT/cluster_runs/sota_20260919_submissions.tsv"
+record="${SUBMISSION_RECORD:-$SNAPSHOT_ROOT/cluster_runs/sota_20260919_submissions.tsv}"
+subset=",${SUBSET:-},"
 if [[ -e "$record" ]]; then
   echo "Submission record already exists: $record" >&2
   exit 2
@@ -57,6 +58,7 @@ declare -a specs=(
 printf 'name\tseed\tjob_id\tparent_sha\tadditional_iterations\toverrides\n' > "$record"
 for spec in "${specs[@]}"; do
   IFS='|' read -r branch seed branch_overrides <<< "$spec"
+  [[ "$subset" == ",," || "$subset" == *",$branch,"* ]] || continue
   name="sota_${branch}_s${seed}_to34698"
   overrides="$common $branch_overrides"
   job=$(submit_one "$name" "$seed" "$overrides")
