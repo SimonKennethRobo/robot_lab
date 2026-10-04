@@ -50,7 +50,7 @@ The table below lists all available environments:
 
 | robot_lab Version | Isaac Lab Version             | Isaac Sim Version         |
 |------------------ | ----------------------------- | ------------------------- |
-| This branch       | 3.0.0                         | Local 3.0 runtime        |
+| `main` branch     | `v3.0.0`                      | Isaac Sim 6.1             |
 | `v2.3.2`          | `v2.3.2`                      | Isaac Sim 4.5 / 5.0 / 5.1 |
 | `v2.2.2`          | `v2.2.1`                      | Isaac Sim 4.5 / 5.0       |
 | `v2.1.1`          | `v2.1.1`                      | Isaac Sim 4.5             |
@@ -58,35 +58,30 @@ The table below lists all available environments:
 
 ## Installation
 
-Requires Isaac Lab 3.0 and Isaac Sim 6.x. Isaac Lab 2.x is no longer supported.
+- Install Isaac Lab 3.0 by following the [installation guide](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html). Isaac Lab 3.0 requires Python 3.12. For Isaac Lab 2.x, use the `v2.3.2` tag of this repository.
 
-This branch targets **Isaac Lab 3.0 and Python 3.12 only**. Historical release tags
-in the table above retain their original dependencies. See
-[the migration notes](docs/isaaclab3_migration_notes.md) for validation and limitations.
+- Clone this repository separately from the Isaac Lab installation (i.e. outside the `IsaacLab` directory):
 
-Use an existing Isaac Lab 3.0 environment without modifying it:
+  ```bash
+  git clone https://github.com/fan-ziqi/robot_lab.git
+  ```
 
-```bash
-export ISAACLAB_ROOT=/home/simon/Apps/Simulator/Isaac/isaac-lab-3.0.0
-export PYTHONPATH="$PWD/source/robot_lab${PYTHONPATH:+:$PYTHONPATH}"
-export PYTHONDONTWRITEBYTECODE=1
-"$ISAACLAB_ROOT/.venv/bin/python" scripts/tools/list_envs.py
-"$ISAACLAB_ROOT/.venv/bin/python" scripts/reinforcement_learning/rsl_rl/train.py \
-  --task RobotLab-Isaac-Velocity-Rough-Unitree-Go2-v0 --num_envs 16 \
-  --max_iterations 3 --headless --viz none
-```
+- Using a python interpreter that has Isaac Lab installed, install the library
 
-The RSL-RL and skrl scripts use Isaac Lab 3.0's unified entrypoints. Pass
-`--checkpoint /path/to/model.pt` to resume training or play; use `--max_steps 50`
-for bounded playback. Playback exports JIT and ONNX policies beside the checkpoint.
-Interactive viewing requires `--viz kit`. Headless video uses
-`--headless --viz kit --video`. The old custom `--keyboard`
-flag is only retained by `rsl_rl/play_cs.py` and CusRL playback; standard playback
-uses the upstream CLI. Use configuration overrides to set playback commands.
+  ```bash
+  python -m pip install -e source/robot_lab
+  # or, for uv-managed Isaac Lab environments
+  uv pip install -e source/robot_lab
+  ```
 
-`skrl`, `cusrl`, and motion preprocessing dependencies are optional and must already
-be available in the selected environment before their workflows can run. No
-installation is needed for task registration through `PYTHONPATH`.
+- Verify that the extension is correctly installed by running the following command to print all the available environments in the extension:
+
+  ```bash
+  python scripts/tools/list_envs.py
+  ```
+
+> [!NOTE]
+> The RSL-RL and skrl scripts use the unified Isaac Lab 3.0 entry points: resume training or select a checkpoint for playback with `--checkpoint /path/to/model.pt`, and use `--viz kit` to open the viewer (`--headless --viz kit --video` records videos). `skrl` and `cusrl` are optional and only need to be installed for their respective scripts.
 
 <details>
 
