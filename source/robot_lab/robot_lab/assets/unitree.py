@@ -6,7 +6,7 @@ Reference: https://github.com/unitreerobotics/unitree_ros
 """
 
 import isaaclab.sim as sim_utils
-from isaaclab.actuators import DCMotorCfg, ImplicitActuatorCfg
+from isaaclab.actuators import DCMotorCfg, DelayedPDActuatorCfg, ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 
 from robot_lab.assets import ISAACLAB_ASSETS_DATA_DIR
@@ -103,19 +103,20 @@ UNITREE_GO2_CFG = ArticulationCfg(
     ),
     soft_joint_pos_limit_factor=0.9,
     actuators={
-        "legs": DCMotorCfg(
-            joint_names_expr=[".*"],
+        "legs": DelayedPDActuatorCfg(
+            joint_names_expr=[".*_joint"],
             joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
-            actuator_effort_limit=23.5,
-            saturation_effort=23.5,
-            actuator_velocity_limit=30.0,
-            stiffness=25.0,
+            actuator_effort_limit=33.5,
+            actuator_velocity_limit=21.0,
+            stiffness=20.0,
             damping=0.5,
             friction=0.0,
+            min_delay=0,
+            max_delay=5,
         ),
     },
 )
-"""Configuration of Unitree Go2 using DC motor.
+"""Configuration of Unitree Go2 using delayed explicit PD.
 """
 
 UNITREE_GO2W_CFG = ArticulationCfg(
