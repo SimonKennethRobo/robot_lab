@@ -69,7 +69,7 @@ def track_lin_vel_xy_yaw_frame_exp(
 
 
 def track_ang_vel_z_world_exp(
-    env, command_name: str, std: float, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
+    env, std: float, command_name: str, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")
 ) -> torch.Tensor:
     """Reward tracking of angular velocity commands (yaw) in world frame using exponential kernel."""
     # extract the used quantities (to enable type-hinting)
@@ -106,7 +106,7 @@ def stand_still(
     """Penalize offsets from the default joint positions when the command is very small."""
     # Penalize motion when command is nearly zero.
     reward = mdp.joint_deviation_l1(env, asset_cfg)
-    reward *= torch.norm(env.command_manager.get_command(command_name), dim=1) < command_threshold
+    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) < command_threshold
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -122,7 +122,7 @@ def joint_pos_penalty(
     """Penalize joint position error from default on the articulation."""
     # extract the used quantities (to enable type-hinting)
     asset: Articulation = env.scene[asset_cfg.name]
-    cmd = torch.linalg.norm(env.command_manager.get_command(command_name), dim=1)
+    cmd = torch.linalg.norm(env.command_manager.get_command(command_name)[:, :3], dim=1)
     body_vel = torch.linalg.norm(asset.data.root_lin_vel_b.torch[:, :2], dim=1)
     running_reward = torch.linalg.norm(
         (
@@ -149,7 +149,7 @@ def wheel_vel_penalty(
     asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ) -> torch.Tensor:
     asset: Articulation = env.scene[asset_cfg.name]
-    cmd = torch.linalg.norm(env.command_manager.get_command(command_name), dim=1)
+    cmd = torch.linalg.norm(env.command_manager.get_command(command_name)[:, :3], dim=1)
     body_vel = torch.linalg.norm(asset.data.root_lin_vel_b.torch[:, :2], dim=1)
     joint_vel = torch.abs(asset.data.joint_vel.torch[:, asset_cfg.joint_ids])
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
@@ -233,7 +233,7 @@ class GaitReward(ManagerTermBase):
         async_reward_3 = self._async_reward_func(self.synced_feet_pairs[1][0], self.synced_feet_pairs[0][1])
         async_reward = async_reward_0 * async_reward_1 * async_reward_2 * async_reward_3
         # only enforce gait if cmd > 0
-        cmd = torch.linalg.norm(env.command_manager.get_command(self.command_name), dim=1)
+        cmd = torch.linalg.norm(env.command_manager.get_command(self.command_name)[:, :3], dim=1)
         body_vel = torch.linalg.norm(self.asset.data.root_com_lin_vel_b.torch[:, :2], dim=1)
         reward = torch.where(
             torch.logical_or(cmd > self.command_threshold, body_vel > self.velocity_threshold),
@@ -368,7 +368,7 @@ def feet_air_time(
     last_air_time = contact_sensor.data.last_air_time.torch[:, sensor_cfg.body_ids]
     reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
     # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
+    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) > 0.1
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -391,7 +391,7 @@ def feet_air_time_positive_biped(env, command_name: str, threshold: float, senso
     reward = torch.min(torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0), dim=1)[0]
     reward = torch.clamp(reward, max=threshold)
     # no reward for zero command
-    reward *= torch.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
+    reward *= torch.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) > 0.1
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -421,7 +421,7 @@ def feet_contact(
     contact_num = torch.sum(contact, dim=1)
     reward = (contact_num != expect_contact_num).float()
     # no reward for zero command
-    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
+    reward *= torch.linalg.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) > 0.1
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -431,9 +431,9 @@ def feet_contact_without_cmd(env: ManagerBasedRLEnv, command_name: str, sensor_c
     # extract the used quantities (to enable type-hinting)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     # compute the reward
-    contact = contact_sensor.compute_first_contact(env.step_dt).torch[:, sensor_cfg.body_ids]
+    contact = contact_sensor.data.net_normal_forces_w.torch[:, sensor_cfg.body_ids].norm(dim=-1) > 1.0
     reward = torch.sum(contact, dim=-1).float()
-    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) < 0.1
+    reward *= torch.linalg.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) < 0.1
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -532,7 +532,7 @@ def feet_height(
     )
     reward = torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1)
     # no reward for zero command
-    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
+    reward *= torch.linalg.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) > 0.1
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -564,7 +564,7 @@ def feet_height_body(
     foot_z_target_error = torch.square(footpos_in_body_frame[:, :, 2] - target_height).view(env.num_envs, -1)
     foot_velocity_tanh = torch.tanh(tanh_mult * torch.norm(footvel_in_body_frame[:, :, :2], dim=2))
     reward = torch.sum(foot_z_target_error * foot_velocity_tanh, dim=1)
-    reward *= torch.linalg.norm(env.command_manager.get_command(command_name), dim=1) > 0.1
+    reward *= torch.linalg.norm(env.command_manager.get_command(command_name)[:, :3], dim=1) > 0.1
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 
@@ -586,21 +586,9 @@ def feet_slide(
     )
     asset: RigidObject = env.scene[asset_cfg.name]
 
-    # feet_vel = asset.data.body_lin_vel_w.torch[:, asset_cfg.body_ids, :2]
-    # reward = torch.sum(feet_vel.norm(dim=-1) * contacts, dim=1)
-
-    cur_footvel_translated = asset.data.body_lin_vel_w.torch[
-        :, asset_cfg.body_ids, :
-    ] - asset.data.root_lin_vel_w.torch[:, :].unsqueeze(1)
-    footvel_in_body_frame = torch.zeros(env.num_envs, len(asset_cfg.body_ids), 3, device=env.device)
-    for i in range(len(asset_cfg.body_ids)):
-        footvel_in_body_frame[:, i, :] = math_utils.quat_apply_inverse(
-            asset.data.root_quat_w.torch, cur_footvel_translated[:, i, :]
-        )
-    foot_leteral_vel = torch.sqrt(torch.sum(torch.square(footvel_in_body_frame[:, :, :2]), dim=2)).view(
-        env.num_envs, -1
-    )
-    reward = torch.sum(foot_leteral_vel * contacts, dim=1)
+    # Contact slip is measured relative to static ground, matching the v2 recipe.
+    foot_velocity_w = asset.data.body_lin_vel_w.torch[:, asset_cfg.body_ids, :2]
+    reward = torch.sum(foot_velocity_w.norm(dim=-1) * contacts, dim=1)
     reward *= torch.clamp(-env.scene["robot"].data.projected_gravity_b.torch[:, 2], 0, 0.7) / 0.7
     return reward
 

@@ -66,6 +66,15 @@ def load_order_profile(cfg, key: str) -> tuple[tuple[str, ...], tuple[str, ...]]
             )
         if not asset.as_posix().endswith("/" + profile["asset_relative_path"]):
             raise ValueError(f"Ordering profile {key} asset relative path mismatch: {asset}")
+    elif asset_kind == "usd_sha256":
+        asset = Path(spawn.usd_path)
+        if not asset.as_posix().endswith("/" + profile["asset_relative_path"]):
+            raise ValueError(f"Ordering profile {key} asset relative path mismatch: {asset}")
+        for relative, expected in profile["asset_files_sha256"].items():
+            dependency = asset.parent / relative
+            actual = hashlib.sha256(dependency.read_bytes()).hexdigest()
+            if actual != expected:
+                raise ValueError(f"Ordering profile {key} SHA256 mismatch: {dependency}: {actual} != {expected}")
     elif asset_kind == "usd":
         uri = profile.get("asset_uri")
         if not isinstance(uri, str) or not uri.strip():

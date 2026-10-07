@@ -114,7 +114,7 @@ class UnitreeGo2RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         ]
 
         # Action penalties
-        self.rewards.action_rate_l2.weight = -0.01
+        self.rewards.action_rate_l2.weight = -0.15
 
         # Contact sensor
         self.rewards.undesired_contacts.weight = -1.0

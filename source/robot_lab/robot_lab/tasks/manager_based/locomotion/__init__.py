@@ -9,3 +9,5 @@
 """Locomotion environments for legged robots."""
 
 from .velocity import *  # noqa
+
+from . import velocity_pose  # noqa: F401
