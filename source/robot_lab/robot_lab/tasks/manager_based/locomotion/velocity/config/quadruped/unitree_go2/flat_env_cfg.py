@@ -12,6 +12,12 @@ class UnitreeGo2FlatEnvCfg(UnitreeGo2RoughEnvCfg):
         # post init of parent
         super().__post_init__()
 
+        # simulation settings
+        newton_mjwarp = self.sim.physics.newton_mjwarp
+        newton_mjwarp.solver_cfg.njmax = 65
+        newton_mjwarp.solver_cfg.nconmax = 35
+        self.sim.physics.default = newton_mjwarp
+
         # override rewards
         self.rewards.base_height_l2.params["sensor_cfg"] = None
         # change terrain to flat

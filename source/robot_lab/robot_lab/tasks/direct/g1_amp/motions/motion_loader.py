@@ -38,6 +38,12 @@ class MotionLoader:
         self.dof_velocities = torch.tensor(data["dof_velocities"], dtype=torch.float32, device=self.device)
         self.body_positions = torch.tensor(data["body_positions"], dtype=torch.float32, device=self.device)
         self.body_rotations = torch.tensor(data["body_rotations"], dtype=torch.float32, device=self.device)
+        quaternion_order = str(data["quaternion_order"].item()) if "quaternion_order" in data else "wxyz"
+        if quaternion_order not in ("xyzw", "wxyz"):
+            raise ValueError(f"Unsupported quaternion_order: {quaternion_order!r}")
+        if quaternion_order == "wxyz":
+            self.body_rotations = self.body_rotations[..., [1, 2, 3, 0]]
+
         self.body_linear_velocities = torch.tensor(
             data["body_linear_velocities"], dtype=torch.float32, device=self.device
         )
@@ -113,8 +119,8 @@ class MotionLoader:
         """Interpolation between consecutive rotations (Spherical Linear Interpolation).
 
         Args:
-            q0: The first quaternion (wxyz). Shape is (N, 4) or (N, M, 4).
-            q1: The second quaternion (wxyz). Shape is (N, 4) or (N, M, 4).
+            q0: The first quaternion (xyzw). Shape is (N, 4) or (N, M, 4).
+            q1: The second quaternion (xyzw). Shape is (N, 4) or (N, M, 4).
             blend: Interpolation coefficient between 0 (q0) and 1 (q1).
             start: Indexes to fetch the first quaternion. If both, ``start`` and ``end` are specified,
                 the first and second quaternions will be fetches from the argument ``q0`` (dimension 0).
@@ -131,7 +137,7 @@ class MotionLoader:
         if q0.ndim >= 3:
             blend = blend.unsqueeze(-1)
 
-        qw, qx, qy, qz = 0, 1, 2, 3  # wxyz
+        qw, qx, qy, qz = 3, 0, 1, 2  # xyzw
         cos_half_theta = (
             q0[..., qw] * q1[..., qw]
             + q0[..., qx] * q1[..., qx]
@@ -142,24 +148,25 @@ class MotionLoader:
         neg_mask = cos_half_theta < 0
         q1 = q1.clone()
         q1[neg_mask] = -q1[neg_mask]
-        cos_half_theta = torch.abs(cos_half_theta)
+        cos_half_theta = torch.abs(cos_half_theta).clamp(max=1.0)
         cos_half_theta = torch.unsqueeze(cos_half_theta, dim=-1)
 
         half_theta = torch.acos(cos_half_theta)
         sin_half_theta = torch.sqrt(1.0 - cos_half_theta * cos_half_theta)
 
-        ratio_a = torch.sin((1 - blend) * half_theta) / sin_half_theta
-        ratio_b = torch.sin(blend * half_theta) / sin_half_theta
+        denominator = sin_half_theta.clamp_min(torch.finfo(q0.dtype).eps)
+        ratio_a = torch.sin((1 - blend) * half_theta) / denominator
+        ratio_b = torch.sin(blend * half_theta) / denominator
 
         new_q_x = ratio_a * q0[..., qx : qx + 1] + ratio_b * q1[..., qx : qx + 1]
         new_q_y = ratio_a * q0[..., qy : qy + 1] + ratio_b * q1[..., qy : qy + 1]
         new_q_z = ratio_a * q0[..., qz : qz + 1] + ratio_b * q1[..., qz : qz + 1]
         new_q_w = ratio_a * q0[..., qw : qw + 1] + ratio_b * q1[..., qw : qw + 1]
 
-        new_q = torch.cat([new_q_w, new_q_x, new_q_y, new_q_z], dim=len(new_q_w.shape) - 1)
-        new_q = torch.where(torch.abs(sin_half_theta) < 0.001, 0.5 * q0 + 0.5 * q1, new_q)
+        new_q = torch.cat([new_q_x, new_q_y, new_q_z, new_q_w], dim=len(new_q_w.shape) - 1)
+        new_q = torch.where(torch.abs(sin_half_theta) < 0.001, (1 - blend) * q0 + blend * q1, new_q)
         new_q = torch.where(torch.abs(cos_half_theta) >= 1, q0, new_q)
-        return new_q
+        return torch.nn.functional.normalize(new_q, dim=-1)
 
     def _compute_frame_blend(self, times: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Compute the indexes of the first and second values, as well as the blending time
@@ -172,10 +179,11 @@ class MotionLoader:
         Returns:
             First value indexes, Second value indexes, and blending time between 0 (first value) and 1 (second value).
         """
-        phase = np.clip(times / self.duration, 0.0, 1.0)
-        index_0 = (phase * (self.num_frames - 1)).round(decimals=0).astype(int)
+        times = np.clip(times, 0.0, self.duration)
+        frame = times / self.dt
+        index_0 = np.floor(frame).astype(int)
         index_1 = np.minimum(index_0 + 1, self.num_frames - 1)
-        blend = ((times - index_0 * self.dt) / self.dt).round(decimals=5)
+        blend = frame - index_0
         return index_0, index_1, blend
 
     def sample_times(self, num_samples: int, duration: float | None = None) -> np.ndarray:
@@ -215,7 +223,7 @@ class MotionLoader:
             Sampled motion DOF positions (with shape (N, num_dofs)),
             DOF velocities (with shape (N, num_dofs)),
             body positions (with shape (N, num_bodies, 3)),
-            body rotations (with shape (N, num_bodies, 4), as wxyz quaternion),
+            body rotations (with shape (N, num_bodies, 4), as xyzw quaternion),
             body linear velocities (with shape (N, num_bodies, 3))
             and body angular velocities (with shape (N, num_bodies, 3)).
         """
@@ -283,7 +291,7 @@ class MotionLoader:
         orig_dt = self.dt
         orig_times = np.arange(orig_num_frames) * orig_dt
         target_num_frames = int(self.duration / target_dt) + 1
-        target_times = np.linspace(0, self.duration, target_num_frames)
+        target_times = np.arange(target_num_frames) * target_dt
 
         def interp_tensor(data, kind="linear"):
             data_np = data.cpu().numpy()
@@ -300,10 +308,10 @@ class MotionLoader:
         N, B, _ = body_rot_np.shape
         body_rot_interp = np.zeros((target_num_frames, B, 4), dtype=np.float32)
         for j in range(B):
-            r = R.from_quat(body_rot_np[:, j, [1, 2, 3, 0]])  # convert to xyzw
+            r = R.from_quat(body_rot_np[:, j, :])  # runtime is xyzw
             slerp = Slerp(orig_times, r)
             interp_r = slerp(target_times)
-            body_rot_interp[:, j, :] = interp_r.as_quat()[:, [3, 0, 1, 2]]  # back to wxyz
+            body_rot_interp[:, j, :] = interp_r.as_quat()  # SciPy returns xyzw
         self.body_rotations = torch.from_numpy(body_rot_interp.astype(np.float32)).to(self.body_rotations.device)
 
         self.dt = target_dt

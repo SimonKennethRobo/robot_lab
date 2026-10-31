@@ -9,13 +9,11 @@ ENV DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH=${DOCKER_ISAACLAB_EXTENSION_TEMPLATE
 USER root
 
 # Copy the Isaac Lab Extension Template directory (files to exclude are defined in .dockerignore)
-COPY ../ ${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}
+COPY . ${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}
 
-# # Install whatever you need as additional dependencies.
-RUN bash -i -c "source ${HOME}/.bashrc && \
-    cd ${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}/source/robot_lab && \
-    pip install -e ."
+# Install task-discovery metadata in the base image's existing Isaac Lab environment.
+RUN uv pip install --no-deps -e ${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}
+ENV PYTHONDONTWRITEBYTECODE=1
 
-# make working directory as the Isaac Lab directory
-# this is the default directory when the container is run
-WORKDIR /workspace
+# Use the extension directory for project-relative scripts and task discovery.
+WORKDIR ${DOCKER_ISAACLAB_EXTENSION_TEMPLATE_PATH}

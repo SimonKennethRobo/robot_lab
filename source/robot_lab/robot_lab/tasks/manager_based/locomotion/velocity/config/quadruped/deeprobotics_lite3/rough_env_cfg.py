@@ -1,7 +1,7 @@
 # Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
-from isaaclab.utils import configclass
+from isaaclab.utils import configclass, replace
 
 from robot_lab.tasks.manager_based.locomotion.velocity.velocity_env_cfg import LocomotionVelocityRoughEnvCfg
 
@@ -28,10 +28,12 @@ class DeeproboticsLite3RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # post init of parent
         super().__post_init__()
 
-        # ------------------------------Sence------------------------------
-        self.scene.robot = DEEPROBOTICS_LITE3_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # ------------------------------Scene------------------------------
+        self.scene.robot = replace(DEEPROBOTICS_LITE3_CFG, prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/Geometry/TORSO"
+        self.scene.height_scanner.spawn = None
+        self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/Geometry/TORSO"
+        self.scene.height_scanner_base.spawn = None
 
         # ------------------------------Observations------------------------------
         self.observations.policy.base_lin_vel.scale = 2.0
@@ -159,3 +161,5 @@ class DeeproboticsLite3RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # self.commands.base_velocity.ranges.lin_vel_x = (-1.5, 1.5)
         # self.commands.base_velocity.ranges.lin_vel_y = (-0.8, 0.8)
         # self.commands.base_velocity.ranges.ang_vel_z = (-1.5, 1.5)
+
+        # Only this independently validated class opts into Newton.

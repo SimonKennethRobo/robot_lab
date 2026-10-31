@@ -1,7 +1,7 @@
 # Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
-from isaaclab.utils import configclass
+from isaaclab.utils import configclass, replace
 
 import robot_lab.tasks.manager_based.locomotion.velocity.mdp as mdp
 from robot_lab.tasks.manager_based.locomotion.velocity.velocity_env_cfg import LocomotionVelocityRoughEnvCfg
@@ -48,10 +48,18 @@ class UnitreeG1RoughEnvCfg(LocomotionVelocityRoughEnvCfg):
         # post init of parent
         super().__post_init__()
 
-        # ------------------------------Sence------------------------------
-        self.scene.robot = UNITREE_G1_29DOF_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
-        self.scene.height_scanner.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
-        self.scene.height_scanner_base.prim_path = "{ENV_REGEX_NS}/Robot/" + self.base_link_name
+        # ------------------------------Scene------------------------------
+        self.scene.robot = replace(UNITREE_G1_29DOF_CFG, prim_path="{ENV_REGEX_NS}/Robot")
+        # Merge the fixed sensor frames before mass/COM randomization.
+        self.scene.robot.spawn.merge_fixed_joints = True
+        self.scene.height_scanner.prim_path = (
+            "{ENV_REGEX_NS}/Robot/Geometry/pelvis/waist_yaw_link/waist_roll_link/torso_link"
+        )
+        self.scene.height_scanner.spawn = None
+        self.scene.height_scanner_base.prim_path = (
+            "{ENV_REGEX_NS}/Robot/Geometry/pelvis/waist_yaw_link/waist_roll_link/torso_link"
+        )
+        self.scene.height_scanner_base.spawn = None
 
         # ------------------------------Observations------------------------------
         self.observations.policy.base_lin_vel.scale = 2.0

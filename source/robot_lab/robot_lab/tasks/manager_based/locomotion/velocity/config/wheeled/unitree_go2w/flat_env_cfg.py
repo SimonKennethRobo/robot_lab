@@ -27,3 +27,5 @@ class UnitreeGo2WFlatEnvCfg(UnitreeGo2WRoughEnvCfg):
         # If the weight of rewards is 0, set rewards to None
         if self.__class__.__name__ == "UnitreeGo2WFlatEnvCfg":
             self.disable_zero_weight_rewards()
+
+        # Only this independently validated class opts into Newton.

@@ -27,3 +27,5 @@ class ZsibotZSL1WFlatEnvCfg(ZsibotZSL1WRoughEnvCfg):
         # If the weight of rewards is 0, set rewards to None
         if self.__class__.__name__ == "ZsibotZSL1WFlatEnvCfg":
             self.disable_zero_weight_rewards()
+
+        # Only this independently validated class opts into Newton.

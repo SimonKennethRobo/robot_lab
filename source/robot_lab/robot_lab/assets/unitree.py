@@ -5,11 +5,14 @@
 Reference: https://github.com/unitreerobotics/unitree_ros
 """
 
+from isaaclab_newton.sim.schemas import NewtonArticulationCfg
+from isaaclab_physx.sim.schemas import PhysxArticulationCfg, PhysxRigidBodyCfg
+
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import DCMotorCfg, ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 
-from robot_lab.assets import ISAACLAB_ASSETS_DATA_DIR
+from robot_lab.assets import ROBOT_LAB_ASSETS_DIR
 
 ##
 # Configuration
@@ -19,11 +22,10 @@ from robot_lab.assets import ISAACLAB_ASSETS_DATA_DIR
 UNITREE_A1_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
-        merge_fixed_joints=True,
-        replace_cylinders_with_capsules=False,
-        asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/a1_description/urdf/a1.urdf",
+        merge_fixed_joints=False,
+        asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/a1_description/urdf/a1.urdf",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=PhysxRigidBodyCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -32,9 +34,12 @@ UNITREE_A1_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
-        ),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+            ),
+            NewtonArticulationCfg(self_collision_enabled=False),
+        ],
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
@@ -54,9 +59,10 @@ UNITREE_A1_CFG = ArticulationCfg(
     actuators={
         "legs": DCMotorCfg(
             joint_names_expr=[".*_joint"],
-            effort_limit=33.5,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=33.5,
             saturation_effort=33.5,
-            velocity_limit=21.0,
+            actuator_velocity_limit=21.0,
             stiffness=20.0,
             damping=0.5,
             friction=0.0,
@@ -71,11 +77,10 @@ Note: Specifications taken from: https://www.trossenrobotics.com/a1-quadruped#sp
 UNITREE_GO2_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
-        merge_fixed_joints=True,
-        replace_cylinders_with_capsules=False,
-        asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/go2_description/urdf/go2_description.urdf",
+        merge_fixed_joints=False,
+        asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/go2_description/urdf/go2_description.urdf",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=PhysxRigidBodyCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -84,9 +89,12 @@ UNITREE_GO2_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
-        ),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+            ),
+            NewtonArticulationCfg(self_collision_enabled=False),
+        ],
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
@@ -106,9 +114,10 @@ UNITREE_GO2_CFG = ArticulationCfg(
     actuators={
         "legs": DCMotorCfg(
             joint_names_expr=[".*"],
-            effort_limit=23.5,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=23.5,
             saturation_effort=23.5,
-            velocity_limit=30.0,
+            actuator_velocity_limit=30.0,
             stiffness=25.0,
             damping=0.5,
             friction=0.0,
@@ -121,11 +130,10 @@ UNITREE_GO2_CFG = ArticulationCfg(
 UNITREE_GO2W_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
-        merge_fixed_joints=True,
-        replace_cylinders_with_capsules=False,
-        asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/go2w_description/urdf/go2w_description.urdf",
+        merge_fixed_joints=False,
+        asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/go2w_description/urdf/go2w_description.urdf",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=PhysxRigidBodyCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -134,9 +142,12 @@ UNITREE_GO2W_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=1
-        ),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=1
+            ),
+            NewtonArticulationCfg(self_collision_enabled=False),
+        ],
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
@@ -157,16 +168,16 @@ UNITREE_GO2W_CFG = ArticulationCfg(
     actuators={
         "legs": ImplicitActuatorCfg(
             joint_names_expr=["^(?!.*_foot_joint).*"],
-            effort_limit_sim=23.5,
-            velocity_limit_sim=30.0,
+            joint_effort_limit=23.5,
+            joint_velocity_limit=30.0,
             stiffness=25.0,
             damping=0.5,
             friction=0.0,
         ),
         "wheels": ImplicitActuatorCfg(
             joint_names_expr=[".*_foot_joint"],
-            effort_limit_sim=23.5,
-            velocity_limit_sim=30.0,
+            joint_effort_limit=23.5,
+            joint_velocity_limit=30.0,
             stiffness=0.0,
             damping=0.5,
             friction=0.0,
@@ -179,11 +190,10 @@ UNITREE_GO2W_CFG = ArticulationCfg(
 UNITREE_B2_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
-        merge_fixed_joints=True,
-        replace_cylinders_with_capsules=False,
-        asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/b2_description/urdf/b2_description.urdf",
+        merge_fixed_joints=False,
+        asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/b2_description/urdf/b2_description.urdf",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=PhysxRigidBodyCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -192,9 +202,12 @@ UNITREE_B2_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
-        ),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+            ),
+            NewtonArticulationCfg(self_collision_enabled=False),
+        ],
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
@@ -214,27 +227,30 @@ UNITREE_B2_CFG = ArticulationCfg(
     actuators={
         "hip": DCMotorCfg(
             joint_names_expr=[".*_hip_joint"],
-            effort_limit=200.0,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=200.0,
             saturation_effort=200.0,
-            velocity_limit=23.0,
+            actuator_velocity_limit=23.0,
             stiffness=160.0,
             damping=5.0,
             friction=0.0,
         ),
         "thigh": DCMotorCfg(
             joint_names_expr=[".*_thigh_joint"],
-            effort_limit=200.0,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=200.0,
             saturation_effort=200.0,
-            velocity_limit=23.0,
+            actuator_velocity_limit=23.0,
             stiffness=160.0,
             damping=5.0,
             friction=0.0,
         ),
         "calf": DCMotorCfg(
             joint_names_expr=[".*_calf_joint"],
-            effort_limit=320.0,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=320.0,
             saturation_effort=320.0,
-            velocity_limit=14.0,
+            actuator_velocity_limit=14.0,
             stiffness=160.0,
             damping=5.0,
             friction=0.0,
@@ -248,11 +264,10 @@ UNITREE_B2_CFG = ArticulationCfg(
 UNITREE_B2W_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         fix_base=False,
-        merge_fixed_joints=True,
-        replace_cylinders_with_capsules=False,
-        asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/b2w_description/urdf/b2w_description.urdf",
+        merge_fixed_joints=False,
+        asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/b2w_description/urdf/b2w_description.urdf",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=PhysxRigidBodyCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -261,9 +276,12 @@ UNITREE_B2W_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
-        ),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=False, solver_position_iteration_count=4, solver_velocity_iteration_count=0
+            ),
+            NewtonArticulationCfg(self_collision_enabled=False),
+        ],
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
@@ -284,35 +302,38 @@ UNITREE_B2W_CFG = ArticulationCfg(
     actuators={
         "hip": DCMotorCfg(
             joint_names_expr=[".*_hip_joint"],
-            effort_limit=200.0,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=200.0,
             saturation_effort=200.0,
-            velocity_limit=23.0,
+            actuator_velocity_limit=23.0,
             stiffness=160.0,
             damping=5.0,
             friction=0.0,
         ),
         "thigh": DCMotorCfg(
             joint_names_expr=[".*_thigh_joint"],
-            effort_limit=200.0,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=200.0,
             saturation_effort=200.0,
-            velocity_limit=23.0,
+            actuator_velocity_limit=23.0,
             stiffness=160.0,
             damping=5.0,
             friction=0.0,
         ),
         "calf": DCMotorCfg(
             joint_names_expr=[".*_calf_joint"],
-            effort_limit=320.0,
+            joint_effort_limit=1.0e9,  # Preserve the Isaac Lab 2.x explicit-actuator solver clamp.
+            actuator_effort_limit=320.0,
             saturation_effort=320.0,
-            velocity_limit=14.0,
+            actuator_velocity_limit=14.0,
             stiffness=160.0,
             damping=5.0,
             friction=0.0,
         ),
         "wheel": ImplicitActuatorCfg(
             joint_names_expr=[".*_foot_joint"],
-            effort_limit_sim=20.0,
-            velocity_limit_sim=50.0,
+            joint_effort_limit=20.0,
+            joint_velocity_limit=50.0,
             stiffness=0.0,
             damping=1.0,
             friction=0.0,
@@ -327,10 +348,9 @@ UNITREE_B2W_CFG = ArticulationCfg(
 #     spawn=sim_utils.UrdfFileCfg(
 #         fix_base=False,
 #         merge_fixed_joints=True,
-#         replace_cylinders_with_capsules=False,
-#         asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/g1_description/urdf/g1_29dof_rev_1_0.urdf",
+#         asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/g1_description/urdf/g1_29dof_rev_1_0.urdf",
 #         activate_contact_sensors=True,
-#         rigid_props=sim_utils.RigidBodyPropertiesCfg(
+#         rigid_props=PhysxRigidBodyCfg(
 #             disable_gravity=False,
 #             retain_accelerations=False,
 #             linear_damping=0.0,
@@ -339,7 +359,7 @@ UNITREE_B2W_CFG = ArticulationCfg(
 #             max_angular_velocity=3.0,
 #             max_depenetration_velocity=10.0,
 #         ),
-#         articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+#         articulation_props=PhysxArticulationCfg(
 #             enabled_self_collisions=False, solver_position_iteration_count=8, solver_velocity_iteration_count=4
 #         ),
 #         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -377,8 +397,8 @@ UNITREE_B2W_CFG = ArticulationCfg(
 #                 ".*_hip_yaw_joint",
 #                 ".*_knee_joint",
 #             ],
-#             effort_limit_sim=300,
-#             velocity_limit_sim=100.0,
+#             joint_effort_limit=300,
+#             joint_velocity_limit=100.0,
 #             stiffness={
 #                 ".*_hip_pitch_joint": 200.0,
 #                 ".*_hip_roll_joint": 150.0,
@@ -398,8 +418,8 @@ UNITREE_B2W_CFG = ArticulationCfg(
 #         ),
 #         "waist": ImplicitActuatorCfg(
 #             joint_names_expr=["waist_.*_joint"],
-#             effort_limit_sim=300,
-#             velocity_limit_sim=100.0,
+#             joint_effort_limit=300,
+#             joint_velocity_limit=100.0,
 #             stiffness={
 #                 "waist_yaw_joint": 200.0,
 #                 "waist_roll_joint": 200.0,
@@ -417,7 +437,7 @@ UNITREE_B2W_CFG = ArticulationCfg(
 #             },
 #         ),
 #         "feet": ImplicitActuatorCfg(
-#             effort_limit_sim=20,
+#             joint_effort_limit=20,
 #             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
 #             stiffness=20.0,
 #             damping=2.0,
@@ -431,8 +451,8 @@ UNITREE_B2W_CFG = ArticulationCfg(
 #                 ".*_elbow_joint",
 #                 ".*_wrist_.*",
 #             ],
-#             effort_limit_sim=300,
-#             velocity_limit_sim=100.0,
+#             joint_effort_limit=300,
+#             joint_velocity_limit=100.0,
 #             stiffness=40.0,
 #             damping=10.0,
 #             armature={
@@ -465,11 +485,11 @@ DAMPING_4010 = 2.0 * DAMPING_RATIO * ARMATURE_4010 * NATURAL_FREQ
 
 UNITREE_G1_29DOF_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
+        merge_fixed_joints=False,
         fix_base=False,
-        replace_cylinders_with_capsules=True,
-        asset_path=f"{ISAACLAB_ASSETS_DATA_DIR}/Robots/unitree/g1_description/urdf/g1_29dof_rev_1_0.urdf",
+        asset_path=f"{ROBOT_LAB_ASSETS_DIR}/Robots/unitree/g1_description/urdf/g1_29dof_rev_1_0.urdf",
         activate_contact_sensors=True,
-        rigid_props=sim_utils.RigidBodyPropertiesCfg(
+        rigid_props=PhysxRigidBodyCfg(
             disable_gravity=False,
             retain_accelerations=False,
             linear_damping=0.0,
@@ -478,9 +498,12 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
             max_angular_velocity=1000.0,
             max_depenetration_velocity=1.0,
         ),
-        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-            enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=4
-        ),
+        articulation_props=[
+            PhysxArticulationCfg(
+                enabled_self_collisions=True, solver_position_iteration_count=8, solver_velocity_iteration_count=4
+            ),
+            NewtonArticulationCfg(self_collision_enabled=True),
+        ],
         joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
             gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0, damping=0)
         ),
@@ -508,13 +531,13 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
                 ".*_hip_pitch_joint",
                 ".*_knee_joint",
             ],
-            effort_limit_sim={
+            joint_effort_limit={
                 ".*_hip_yaw_joint": 88.0,
                 ".*_hip_roll_joint": 139.0,
                 ".*_hip_pitch_joint": 88.0,
                 ".*_knee_joint": 139.0,
             },
-            velocity_limit_sim={
+            joint_velocity_limit={
                 ".*_hip_yaw_joint": 32.0,
                 ".*_hip_roll_joint": 20.0,
                 ".*_hip_pitch_joint": 32.0,
@@ -540,24 +563,24 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
             },
         ),
         "feet": ImplicitActuatorCfg(
-            effort_limit_sim=50.0,
-            velocity_limit_sim=37.0,
+            joint_effort_limit=50.0,
+            joint_velocity_limit=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
             stiffness=2.0 * STIFFNESS_5020,
             damping=2.0 * DAMPING_5020,
             armature=2.0 * ARMATURE_5020,
         ),
         "waist": ImplicitActuatorCfg(
-            effort_limit_sim=50,
-            velocity_limit_sim=37.0,
+            joint_effort_limit=50,
+            joint_velocity_limit=37.0,
             joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
             stiffness=2.0 * STIFFNESS_5020,
             damping=2.0 * DAMPING_5020,
             armature=2.0 * ARMATURE_5020,
         ),
         "waist_yaw": ImplicitActuatorCfg(
-            effort_limit_sim=88,
-            velocity_limit_sim=32.0,
+            joint_effort_limit=88,
+            joint_velocity_limit=32.0,
             joint_names_expr=["waist_yaw_joint"],
             stiffness=STIFFNESS_7520_14,
             damping=DAMPING_7520_14,
@@ -573,7 +596,7 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
                 ".*_wrist_pitch_joint",
                 ".*_wrist_yaw_joint",
             ],
-            effort_limit_sim={
+            joint_effort_limit={
                 ".*_shoulder_pitch_joint": 25.0,
                 ".*_shoulder_roll_joint": 25.0,
                 ".*_shoulder_yaw_joint": 25.0,
@@ -582,7 +605,7 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
                 ".*_wrist_pitch_joint": 5.0,
                 ".*_wrist_yaw_joint": 5.0,
             },
-            velocity_limit_sim={
+            joint_velocity_limit={
                 ".*_shoulder_pitch_joint": 37.0,
                 ".*_shoulder_roll_joint": 37.0,
                 ".*_shoulder_yaw_joint": 37.0,
@@ -624,7 +647,7 @@ UNITREE_G1_29DOF_CFG = ArticulationCfg(
 
 UNITREE_G1_29DOF_ACTION_SCALE = {}
 for a in UNITREE_G1_29DOF_CFG.actuators.values():
-    e = a.effort_limit_sim
+    e = a.joint_effort_limit
     s = a.stiffness
     names = a.joint_names_expr
     if not isinstance(e, dict):

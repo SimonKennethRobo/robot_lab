@@ -27,3 +27,5 @@ class DeeproboticsLite3FlatEnvCfg(DeeproboticsLite3RoughEnvCfg):
         # If the weight of rewards is 0, set rewards to None
         if self.__class__.__name__ == "DeeproboticsLite3FlatEnvCfg":
             self.disable_zero_weight_rewards()
+
+        # Only this independently validated class opts into Newton.

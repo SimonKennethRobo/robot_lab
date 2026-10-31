@@ -1,12 +1,12 @@
 # Copyright (c) 2024-2026 Ziqi Fan
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Python module serving as a project/extension template.
-"""
+"""Robot Lab task registration without a Kit UI dependency."""
 
-# Register Gym environments.
-from .tasks import *
+from isaaclab.utils.version import standalone_importers_available
 
-# Register UI extensions.
-from .ui_extension_example import *
+# The standalone importer registers its USD schemas before the first stage is created.
+if standalone_importers_available():
+    import isaacsim.asset.importer.urdf  # noqa: F401
+
+from . import tasks  # noqa: F401

@@ -1,7 +1,7 @@
 [package]
 
 # Semantic Versioning is used: https://semver.org/
-version = "2.3.2"
+version = "3.0.0"
 
 # Description
 category = "isaaclab"
@@ -17,7 +17,6 @@ keywords = ["extension", "robot_lab", "isaaclab"]
 [dependencies]
 "isaaclab" = {}
 "isaaclab_assets" = {}
-"isaaclab_mimic" = {}
 "isaaclab_rl" = {}
 "isaaclab_tasks" = {}
 # NOTE: Add additional dependencies here
